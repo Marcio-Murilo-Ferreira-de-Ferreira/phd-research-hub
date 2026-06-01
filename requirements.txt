@@ -1,0 +1,8 @@
+streamlit>=1.35.0
+pyzotero>=1.5.0
+pandas>=2.2.2
+plotly>=5.22.0
+requests>=2.32.3
+python-dotenv>=1.0.1
+networkx>=3.0
+openpyxl>=3.1.0
