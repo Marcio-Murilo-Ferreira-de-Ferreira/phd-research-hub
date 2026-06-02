@@ -41,6 +41,42 @@ def save_onedrive_path(path):
     except Exception:
         pass
 
+def stem_word(w):
+    w = w.lower().strip()
+    # High-frequency mappings for Márcio's specific research domain:
+    mappings = {
+        'tornadoes': 'tornado',
+        'buildings': 'building',
+        'historical': 'historic',
+        'masonries': 'masonry',
+        'structures': 'structure',
+        'analyses': 'analysis',
+        'forces': 'force',
+        'loads': 'load',
+        'damages': 'damage',
+        'simulations': 'simulation',
+        'methods': 'method',
+        'assessments': 'assessment',
+        'parameters': 'parameter',
+        'walls': 'wall'
+    }
+    if w in mappings:
+        return mappings[w]
+    
+    # Generic simple plural stemmer
+    if w.endswith('ies') and len(w) > 5:
+        return w[:-3] + 'y'
+    elif w.endswith('es') and len(w) > 4:
+        if w.endswith('oes'):
+            return w[:-2]
+        elif any(w.endswith(x) for x in ['ses', 'xes', 'ches', 'shes']):
+            return w[:-2]
+        else:
+            return w[:-1]
+    elif w.endswith('s') and not w.endswith('ss') and len(w) > 3:
+        return w[:-1]
+    return w
+
 def check_if_new_and_format(date_str):
     if not date_str:
         return False, ""
@@ -131,6 +167,8 @@ if "gov_search_results" not in st.session_state:
     st.session_state.gov_search_results = []
 if "gov_search_key_terms" not in st.session_state:
     st.session_state.gov_search_key_terms = []
+if "search_key_terms" not in st.session_state:
+    st.session_state.search_key_terms = []
 if "gov_search_active_agencies" not in st.session_state:
     st.session_state.gov_search_active_agencies = []
 if "gov_search_target_databases" not in st.session_state:
@@ -608,10 +646,25 @@ with tab2:
                 'i', 'want', 'to', 'find', 'papers', 'seminars', 'videos', 'theses', 'similar', 'materials', 'study', 'article', 
                 'research', 'looking', 'seeking', 'get', 'literature', 'document', 'documents', 'work', 'works', 'author', 
                 'authors', 'read', 'please', 'give', 'about', 'for', 'with', 'using', 'the', 'a', 'an', 'and', 'or', 'of', 'in', 
-                'on', 'by', 'that', 'this', 'is', 'are', 'we', 'show', 'find', 'me', 'what', 'how', 'where', 'and/or', 'any', 'some'
+                'on', 'by', 'that', 'this', 'is', 'are', 'we', 'show', 'find', 'me', 'what', 'how', 'where', 'and/or', 'any', 'some',
+                'force', 'forces', 'paper', 'papers', 'article', 'articles', 'study', 'studies',
+                'analysis', 'analyses', 'analytical', 'behavior', 'behaviors', 'behaviour', 'behaviours',
+                'method', 'methods', 'methodology', 'methodologies', 'effect', 'effects', 'effective',
+                'impact', 'impacts', 'result', 'results', 'evaluation', 'evaluations',
+                'assessment', 'assessments', 'investigation', 'investigations', 'response', 'responses',
+                'performance', 'performances', 'dynamics', 'dynamic', 'static', 'model', 'models',
+                'modeling', 'modelling', 'simulation', 'simulations', 'numerical', 'numerical-simulation',
+                'experimental', 'testing', 'tests', 'test', 'application', 'applications', 'approach',
+                'approaches', 'characterization', 'characterizations', 'comparative'
             ])
             words = re.findall(r'\b[a-zA-Z0-9-]+\b', golden_prompt.lower())
-            key_terms = [w for w in words if w not in academic_noise_words and len(w) > 2]
+            key_terms = []
+            for w in words:
+                stemmed = stem_word(w)
+                if w not in academic_noise_words and stemmed not in academic_noise_words and len(stemmed) > 2:
+                    key_terms.append(stemmed)
+            seen = set()
+            key_terms = [x for x in key_terms if not (x in seen or seen.add(x))]
             
             # Formulate query: combine user keywords with active agency terms if not searching everything
             active_agencies = []
@@ -641,7 +694,7 @@ with tab2:
                     
                 query_str = " AND ".join(applied_terms)
                 per_page = 60 if "Global Academic Index (OpenAlex)" not in target_databases else 25
-                url = f"https://api.openalex.org/works?filter=title_and_abstract.search:{requests.utils.quote(query_str)}&per-page={per_page}"
+                url = f"https://api.openalex.org/works?search={requests.utils.quote(query_str)}&per-page={per_page}"
                 
                 try:
                     response = requests.get(url).json()
@@ -728,8 +781,6 @@ with tab2:
                 if not is_academic_selected and not matches_selected_agency:
                     continue  # Skip this paper as it doesn't match selected agencies
                     
-                valid_papers_count += 1
-                
                 # Scoring Algorithm (Local NLP similarity estimation)
                 score = 0
                 if key_terms:
@@ -737,9 +788,15 @@ with tab2:
                     score = int((match_count / len(key_terms)) * 100)
                 
                 # Boost score if they match target institutions
-                matched_active_agencies = [a for a in active_agencies if a in paper_full_text]
+                matched_active_agencies = [a for a in active_agencies if re.search(r'\b' + re.escape(a) + r'\b', paper_full_text)]
                 if matched_active_agencies:
                     score = min(100, score + 15 * len(matched_active_agencies))
+                    
+                # Filter out low-scoring irrelevant papers
+                if score < 40:
+                    continue
+                    
+                valid_papers_count += 1
                     
                 # Format Authors
                 authorships = paper.get('authorships', [])
@@ -1033,10 +1090,25 @@ with tab4:
                         'i', 'want', 'to', 'find', 'papers', 'seminars', 'videos', 'theses', 'similar', 'materials', 'study', 'article', 
                         'research', 'looking', 'seeking', 'get', 'literature', 'document', 'documents', 'work', 'works', 'author', 
                         'authors', 'read', 'please', 'give', 'about', 'for', 'with', 'using', 'the', 'a', 'an', 'and', 'or', 'of', 'in', 
-                        'on', 'by', 'that', 'this', 'is', 'are', 'we', 'show', 'find', 'me', 'what', 'how', 'where', 'and/or', 'any', 'some', 'software', 'hit'
+                        'on', 'by', 'that', 'this', 'is', 'are', 'we', 'show', 'find', 'me', 'what', 'how', 'where', 'and/or', 'any', 'some', 'software', 'hit',
+                        'force', 'forces', 'paper', 'papers', 'article', 'articles', 'study', 'studies',
+                        'analysis', 'analyses', 'analytical', 'behavior', 'behaviors', 'behaviour', 'behaviours',
+                        'method', 'methods', 'methodology', 'methodologies', 'effect', 'effects', 'effective',
+                        'impact', 'impacts', 'result', 'results', 'evaluation', 'evaluations',
+                        'assessment', 'assessments', 'investigation', 'investigations', 'response', 'responses',
+                        'performance', 'performances', 'dynamics', 'dynamic', 'static', 'model', 'models',
+                        'modeling', 'modelling', 'simulation', 'simulations', 'numerical', 'numerical-simulation',
+                        'experimental', 'testing', 'tests', 'test', 'application', 'applications', 'approach',
+                        'approaches', 'characterization', 'characterizations', 'comparative'
                     ])
                     words = re.findall(r'\b[a-zA-Z0-9-]+\b', query.lower())
-                    key_terms = [w for w in words if w not in academic_noise_words and len(w) > 2]
+                    key_terms = []
+                    for w in words:
+                        stemmed = stem_word(w)
+                        if w not in academic_noise_words and stemmed not in academic_noise_words and len(stemmed) > 2:
+                            key_terms.append(stemmed)
+                    seen = set()
+                    key_terms = [x for x in key_terms if not (x in seen or seen.add(x))]
                     
                     # High-intelligence Fallback Chain (8 terms -> 5 terms -> 3 terms)
                     # This prevents empty results from overly-specific search prompts
@@ -1049,7 +1121,7 @@ with tab4:
                             applied_terms = key_terms
                             
                         cleaned_query = " AND ".join(applied_terms)
-                        url = f"https://api.openalex.org/works?filter=title_and_abstract.search:{requests.utils.quote(cleaned_query)}&per-page=5"
+                        url = f"https://api.openalex.org/works?search={requests.utils.quote(cleaned_query)}&per-page=5"
                         response = requests.get(url).json()
                         results = response.get('results', [])
                         
@@ -1059,6 +1131,7 @@ with tab4:
                             break
                             
                     st.session_state.search_results = results
+                    st.session_state.search_key_terms = key_terms
                     if not results:
                         st.warning("No papers found even after relaxing the search parameters. Try using broader terms.")
                 except Exception as e:
@@ -1070,6 +1143,27 @@ with tab4:
         st.markdown("#### Search Results")
         for idx, paper in enumerate(st.session_state.search_results):
             title = paper.get('title') or 'Untitled'
+            
+            # Reconstruct abstract locally for score calculation
+            abstract_inverted = paper.get('abstract_inverted_index', {})
+            abstract = ""
+            if abstract_inverted:
+                word_index = []
+                for word, positions in abstract_inverted.items():
+                    for pos in positions:
+                        word_index.append((pos, word))
+                word_index.sort(key=lambda x: x[0])
+                abstract = " ".join([word for pos, word in word_index])
+                
+            paper_full_text = (title + " " + abstract).lower()
+            
+            score = 0
+            key_terms = st.session_state.get('search_key_terms', [])
+            if key_terms:
+                match_count = sum(1 for term in key_terms if term in paper_full_text)
+                score = int((match_count / len(key_terms)) * 100)
+                if score < 40:
+                    continue
             doi = paper.get('doi', '')
             pub_year = paper.get('publication_year', 'Unknown Year')
             

@@ -1,4 +1,5 @@
 __pycache__/
 .streamlit/secrets.toml
+.streamlit/onedrive_path.txt
 *.pyc
 .env
