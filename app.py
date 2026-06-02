@@ -1431,16 +1431,39 @@ with tab5:
     
     # 1. Form to Add a New Seminar
     with st.expander("➕ Register a New Seminar Recording"):
-        with st.form("add_seminar_form"):
-            sem_title = st.text_input("Seminar Title:", placeholder="E.g., Finite Element Analysis of Historical Masonry Walls")
-            sem_presenter = st.text_input("Presenter(s):", placeholder="E.g., Dr. Rebecca Napolitano, Márcio Ferreira")
-            sem_event = st.text_input("Event / Meeting Name:", placeholder="E.g., PSU Research Webinar Series")
-            sem_date = st.text_input("Date / Year:", placeholder="E.g., 2026-06-02")
-            sem_url = st.text_input("Video URL (YouTube, Vimeo, OneDrive, Teams):", placeholder="E.g., https://www.youtube.com/watch?v=...")
-            sem_summary = st.text_area("Key Takeaways & Summary:", height=100, placeholder="Brief summary of the main points discussed...")
+        if 'sem_title_input' not in st.session_state:
+            st.session_state.sem_title_input = ""
+        if 'sem_presenter_input' not in st.session_state:
+            st.session_state.sem_presenter_input = ""
             
-            submit_sem = st.form_submit_button("💾 Save Seminar Recording", use_container_width=True)
-            
+        sem_url = st.text_input("Video URL (YouTube, Vimeo, OneDrive, Teams):", placeholder="E.g., https://www.youtube.com/watch?v=...")
+        
+        # Auto-fetch button for YouTube URLs
+        if sem_url and any(x in sem_url.lower() for x in ['youtube.com', 'youtu.be']):
+            if st.button("⚡ Auto-Fetch YouTube Info", use_container_width=True):
+                with st.spinner("Fetching YouTube details..."):
+                    try:
+                        oembed_url = f"https://www.youtube.com/oembed?url={requests.utils.quote(sem_url)}&format=json"
+                        r = requests.get(oembed_url, timeout=5)
+                        if r.status_code == 200:
+                            data = r.json()
+                            st.session_state.sem_title_input = data.get("title", "")
+                            st.session_state.sem_presenter_input = data.get("author_name", "")
+                            st.success("✅ Successfully fetched YouTube details!")
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ Could not fetch YouTube details. Please fill manually.")
+                    except Exception:
+                        st.warning("⚠️ Error fetching YouTube details. Please fill manually.")
+                        
+        sem_title = st.text_input("Seminar Title:", value=st.session_state.sem_title_input, placeholder="E.g., Finite Element Analysis of Historical Masonry Walls")
+        sem_presenter = st.text_input("Presenter(s):", value=st.session_state.sem_presenter_input, placeholder="E.g., Dr. Rebecca Napolitano, Márcio Ferreira")
+        sem_event = st.text_input("Event / Meeting Name:", placeholder="E.g., PSU Research Webinar Series")
+        sem_date = st.text_input("Date / Year:", placeholder="E.g., 2026-06-02")
+        sem_summary = st.text_area("Key Takeaways & Summary:", height=100, placeholder="Brief summary of the main points discussed...")
+        
+        submit_sem = st.button("💾 Save Seminar Recording", use_container_width=True)
+        
         if submit_sem:
             if not sem_title or not sem_url:
                 st.warning("⚠️ Title and Video URL are required fields.")
@@ -1498,6 +1521,10 @@ with tab5:
                                 if st.session_state.onedrive_path:
                                     sync_seminar_to_onedrive(sem_title, sem_presenter, sem_date, sem_event, sem_url, sem_summary)
                                     st.success("📤 Automatically synced to your shared OneDrive folder!")
+                                
+                                # Reset session state inputs
+                                st.session_state.sem_title_input = ""
+                                st.session_state.sem_presenter_input = ""
                                 st.rerun()
                             else:
                                 st.error("Failed to save to Zotero.")
