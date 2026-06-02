@@ -448,13 +448,34 @@ with tab1:
             all_items = zot.items(limit=50)
             papers = [item for item in all_items if item.get('data', {}).get('itemType') not in ['attachment', 'note']]
             
-            # Sort by dateAdded descending (newest on top)
-            papers.sort(key=lambda x: x.get('data', {}).get('dateAdded', ''), reverse=True)
-            
             st.success(f"✅ Securely connected to Zotero! User ID: {ZOTERO_USER_ID}")
             
             if papers:
-                st.markdown("<div class='glass-card'><h4>Recently Added Papers</h4>", unsafe_allow_html=True)
+                col_title_header, col_sort_dropdown = st.columns([0.5, 0.5])
+                with col_title_header:
+                    st.markdown("<h4 style='margin-top:10px;'>Recently Added Papers</h4>", unsafe_allow_html=True)
+                with col_sort_dropdown:
+                    sort_option = st.selectbox(
+                        "Sort papers by:",
+                        options=["Date Added to Zotero (Newest First)", "Publication Year (Newest First)", "Title (A-Z)"],
+                        label_visibility="collapsed",
+                        key="zotero_sort_option"
+                    )
+                
+                # Perform sorting based on selection
+                if sort_option == "Date Added to Zotero (Newest First)":
+                    papers.sort(key=lambda x: x.get('data', {}).get('dateAdded', ''), reverse=True)
+                elif sort_option == "Publication Year (Newest First)":
+                    # Extrai o ano da data de publicação do Zotero (campo 'date')
+                    def get_year(item_data):
+                        date_str = item_data.get('data', {}).get('date', '0000')
+                        match = re.search(r'\b\d{4}\b', str(date_str))
+                        return match.group(0) if match else "0000"
+                    papers.sort(key=get_year, reverse=True)
+                elif sort_option == "Title (A-Z)":
+                    papers.sort(key=lambda x: x.get('data', {}).get('title', '').strip().lower())
+                
+                st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
                 for item in papers[:10]:  # Show up to 10 recently added papers
                     data = item.get('data', {})
                     title = data.get('title', 'Untitled')
