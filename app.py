@@ -426,7 +426,7 @@ def update_sync_history_log(onedrive_path, new_papers):
         pass
 
 # Page Config (must be first)
-st.set_page_config(page_title="URM Tornado Resilience", page_icon="🌪️", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="URM Tornado Resilience", page_icon="🌪️", layout="wide", initial_sidebar_state="expanded")
 
 @st.dialog("Chat with Paper 💬", width="large")
 def chat_with_paper_modal(paper_info):
