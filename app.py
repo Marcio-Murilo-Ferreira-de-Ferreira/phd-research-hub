@@ -339,6 +339,77 @@ def sync_to_onedrive(title, authors, year, abstract, doi, pdf_url, log_history=T
             
     return True
 
+def sync_seminar_to_onedrive(title, presenters, date, event, url, abstract):
+    path = st.session_state.get('onedrive_path', '')
+    if not path or not os.path.exists(path):
+        return False
+    
+    # Create folder Seminars inside OneDrive path
+    seminars_dir = os.path.join(path, "Seminars")
+    os.makedirs(seminars_dir, exist_ok=True)
+    
+    # Clean filename
+    def clean_filename_part(text):
+        if not text:
+            return ""
+        text = re.sub(r'[\\/*?:"<>|]', '', text)
+        return text.encode('ascii', 'ignore').decode('ascii').strip()
+        
+    clean_title = clean_filename_part(title)[:60]
+    safe_presenter = clean_filename_part(presenters.split(',')[0]) if presenters else "Presenter"
+    filename_base = f"{safe_presenter}_{date}_{clean_title}"
+    filename_base = re.sub(r'\s+', ' ', filename_base).strip().strip('.')
+    if not filename_base:
+        filename_base = "Seminar_Recording"
+        
+    md_path = os.path.join(seminars_dir, f"{filename_base}.md")
+    
+    md_content = f"""# 🎥 Seminar Reference Card
+**Title:** {title}
+**Presenter(s):** {presenters}
+**Date:** {date}
+**Event/Meeting:** {event}
+**Video URL:** {url}
+
+## Key Takeaways & Summary
+{abstract if abstract else 'No summary available.'}
+
+---
+*Synced automatically by Márcio's PhD Research Hub*
+"""
+    try:
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(md_content)
+        
+        # Log to Sync_History_Log.md
+        update_sync_history_log(path, [{
+            'title': f"🎥 [Video Seminar] {title}",
+            'authors': presenters if presenters else 'Unknown',
+            'year': date if date else 'Unknown',
+            'date_added': datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        }])
+        return True
+    except Exception:
+        return False
+
+def download_video_file_to_onedrive(video_url, filename_base):
+    path = st.session_state.get('onedrive_path', '')
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        response = requests.get(video_url, stream=True, timeout=30)
+        if response.status_code == 200:
+            os.makedirs(os.path.join(path, "Seminars"), exist_ok=True)
+            video_path = os.path.join(path, "Seminars", f"{filename_base}.mp4")
+            with open(video_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=1024*1024):
+                    if chunk:
+                        f.write(chunk)
+            return True
+    except Exception:
+        pass
+    return False
+
 def sync_all_zotero_to_onedrive():
     path = st.session_state.get('onedrive_path', '')
     if not path or not os.path.exists(path):
@@ -349,98 +420,169 @@ def sync_all_zotero_to_onedrive():
         
     try:
         collections = zot.collections()
+        parent_key = None
+        for c in collections:
+            if "PhD" in c['data']['name']:
+                parent_key = c['data']['key']
+                break
+                
         golden_key = None
+        seminars_key = None
         for c in collections:
             if "Golden Papers" in c['data']['name']:
                 golden_key = c['data']['key']
-                break
+            elif "Seminars" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
+                seminars_key = c['data']['key']
                 
-        if not golden_key:
-            return 0, 0, []
-            
-        items = zot.collection_items(golden_key)
-        items.sort(key=lambda x: x.get('data', {}).get('dateAdded', ''))
-        
         synced_new_papers = []
         synced_count = 0
         total_items = 0
         
-        for item in items:
-            data = item.get('data', {})
-            if data.get('itemType') in ['attachment', 'note']:
-                continue
-                
-            total_items += 1
-            title = data.get('title', 'Untitled')
-            abstract = data.get('abstractNote', '')
-            url = data.get('url', '')
-            year = data.get('date', 'Unknown')
-            date_added = data.get('dateAdded', '')
+        if golden_key:
+            items = zot.collection_items(golden_key)
+            items.sort(key=lambda x: x.get('data', {}).get('dateAdded', ''))
             
-            # Get authors
-            creators = data.get('creators', [])
-            authors_list = []
-            for creator in creators:
-                name = creator.get('lastName') or creator.get('firstName') or creator.get('name')
-                if name:
-                    authors_list.append(name)
-            authors = ", ".join(authors_list) if authors_list else ""
-            
-            # Form clean filename base
-            def clean_filename_part(text):
-                if not text:
-                    return ""
-                text = re.sub(r'[\\/*?:"<>|]', '', text)
-                return text.encode('ascii', 'ignore').decode('ascii').strip()
-                
-            clean_title = clean_filename_part(title)[:60]
-            safe_author = clean_filename_part(authors.split(',')[0]) if authors else ""
-            
-            year_match = re.search(r'\b\d{4}\b', str(year))
-            clean_year = year_match.group(0) if year_match else ""
-            
-            if safe_author and clean_year:
-                filename_base = f"{safe_author}_{clean_year}_{clean_title}"
-            elif safe_author:
-                filename_base = f"{safe_author}_{clean_title}"
-            elif clean_year:
-                filename_base = f"{clean_year}_{clean_title}"
-            else:
-                filename_base = clean_title
-                
-            filename_base = re.sub(r'\s+', ' ', filename_base).strip().strip('.')
-            if not filename_base:
-                filename_base = "Academic_Paper"
-                
-            md_path = os.path.join(path, "SummaryCards", f"{filename_base}.md")
-            
-            # If the summary card doesn't exist, we sync it!
-            if not os.path.exists(md_path):
-                # Search OpenAlex for PDF URL
-                pdf_url = ""
-                try:
-                    query_url = f"https://api.openalex.org/works?search={requests.utils.quote(title)}&per-page=1"
-                    response = requests.get(query_url, timeout=10).json()
-                    results = response.get('results', [])
-                    if Math := results:
-                        best_oa = results[0].get('best_oa_location') or {}
-                        pdf_url = best_oa.get('pdf_url') or ''
-                        if not pdf_url:
-                            content_urls = results[0].get('content_urls') or {}
-                            pdf_url = content_urls.get('pdf') or ''
-                except Exception:
-                    pass
+            for item in items:
+                data = item.get('data', {})
+                if data.get('itemType') in ['attachment', 'note']:
+                    continue
                     
-                success = sync_to_onedrive(title, authors, clean_year, abstract, url, pdf_url, log_history=False)
-                if success:
-                    synced_count += 1
-                    synced_new_papers.append({
-                        'title': title,
-                        'authors': authors if authors else 'Unknown',
-                        'year': clean_year if clean_year else 'Unknown',
-                        'date_added': date_added
-                    })
+                total_items += 1
+                title = data.get('title', 'Untitled')
+                abstract = data.get('abstractNote', '')
+                url = data.get('url', '')
+                year = data.get('date', 'Unknown')
+                date_added = data.get('dateAdded', '')
+                
+                # Get creators/authors
+                creators = data.get('creators', [])
+                authors_list = []
+                for creator in creators:
+                    name = creator.get('lastName') or creator.get('firstName') or creator.get('name')
+                    if name:
+                        authors_list.append(name)
+                authors = ", ".join(authors_list) if authors_list else ""
+                
+                # Form clean filename base
+                def clean_filename_part(text):
+                    if not text:
+                        return ""
+                    text = re.sub(r'[\\/*?:"<>|]', '', text)
+                    return text.encode('ascii', 'ignore').decode('ascii').strip()
                     
+                clean_title = clean_filename_part(title)[:60]
+                safe_author = clean_filename_part(authors.split(',')[0]) if authors else ""
+                
+                year_match = re.search(r'\b\d{4}\b', str(year))
+                clean_year = year_match.group(0) if year_match else ""
+                
+                if safe_author and clean_year:
+                    filename_base = f"{safe_author}_{clean_year}_{clean_title}"
+                elif safe_author:
+                    filename_base = f"{safe_author}_{clean_title}"
+                elif clean_year:
+                    filename_base = f"{clean_year}_{clean_title}"
+                else:
+                    filename_base = clean_title
+                    
+                filename_base = re.sub(r'\s+', ' ', filename_base).strip().strip('.')
+                if not filename_base:
+                    filename_base = "Academic_Paper"
+                    
+                md_path = os.path.join(path, "SummaryCards", f"{filename_base}.md")
+                
+                # If the summary card doesn't exist, we sync it!
+                if not os.path.exists(md_path):
+                    # Search OpenAlex for PDF URL
+                    pdf_url = ""
+                    try:
+                        query_url = f"https://api.openalex.org/works?search={requests.utils.quote(title)}&per-page=1"
+                        response = requests.get(query_url, timeout=10).json()
+                        results = response.get('results', [])
+                        if Math := results:
+                            best_oa = results[0].get('best_oa_location') or {}
+                            pdf_url = best_oa.get('pdf_url') or ''
+                            if not pdf_url:
+                                content_urls = results[0].get('content_urls') or {}
+                                pdf_url = content_urls.get('pdf') or ''
+                    except Exception:
+                        pass
+                        
+                    success = sync_to_onedrive(title, authors, clean_year, abstract, url, pdf_url, log_history=False)
+                    if success:
+                        synced_count += 1
+                        synced_new_papers.append({
+                            'title': title,
+                            'authors': authors if authors else 'Unknown',
+                            'year': clean_year if clean_year else 'Unknown',
+                            'date_added': date_added
+                        })
+                        
+        if seminars_key:
+            seminar_items = zot.collection_items(seminars_key)
+            for item in seminar_items:
+                data = item.get('data', {})
+                if data.get('itemType') == 'presentation':
+                    total_items += 1
+                    title = data.get('title', 'Untitled')
+                    url = data.get('url', '')
+                    date = data.get('date', 'Unknown')
+                    event = data.get('meetingName', 'Unknown')
+                    abstract = data.get('abstractNote', '')
+                    
+                    # Presenters
+                    creators = data.get('creators', [])
+                    presenters_list = []
+                    for creator in creators:
+                        name = creator.get('lastName') or creator.get('firstName') or creator.get('name')
+                        if name:
+                            presenters_list.append(name)
+                    presenters = ", ".join(presenters_list) if presenters_list else "Unknown"
+                    
+                    # Clean filename
+                    def clean_filename_part(text):
+                        if not text:
+                            return ""
+                        text = re.sub(r'[\\/*?:"<>|]', '', text)
+                        return text.encode('ascii', 'ignore').decode('ascii').strip()
+                        
+                    clean_title = clean_filename_part(title)[:60]
+                    safe_presenter = clean_filename_part(presenters.split(',')[0]) if presenters else "Presenter"
+                    filename_base = f"{safe_presenter}_{date}_{clean_title}"
+                    filename_base = re.sub(r'\s+', ' ', filename_base).strip().strip('.')
+                    if not filename_base:
+                        filename_base = "Seminar_Recording"
+                        
+                    md_path = os.path.join(path, "Seminars", f"{filename_base}.md")
+                    if not os.path.exists(md_path):
+                        # Create folder Seminars inside OneDrive path
+                        os.makedirs(os.path.join(path, "Seminars"), exist_ok=True)
+                        md_content = f"""# 🎥 Seminar Reference Card
+**Title:** {title}
+**Presenter(s):** {presenters}
+**Date:** {date}
+**Event/Meeting:** {event}
+**Video URL:** {url}
+
+## Key Takeaways & Summary
+{abstract if abstract else 'No summary available.'}
+
+---
+*Synced automatically by Márcio's PhD Research Hub*
+"""
+                        try:
+                            with open(md_path, 'w', encoding='utf-8') as f:
+                                f.write(md_content)
+                            synced_count += 1
+                            synced_new_papers.append({
+                                'title': f"🎥 [Video Seminar] {title}",
+                                'authors': presenters,
+                                'year': date,
+                                'date_added': data.get('dateAdded', '')
+                            })
+                        except Exception:
+                            pass
+                            
         # Update Sync History Log file inside the OneDrive folder
         if synced_new_papers:
             update_sync_history_log(path, synced_new_papers)
@@ -451,7 +593,7 @@ def sync_all_zotero_to_onedrive():
         return 0, 0, []
 
 # Tabs
-tab1, tab2, tab3, tab4 = st.tabs(["📚 Zotero Library", "🏛️ Gov Databases", "📊 Analytics", "🤖 AI Paper Search"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📚 Zotero Library", "🏛️ Gov Databases", "📊 Analytics", "🤖 AI Paper Search", "🎥 Seminars"])
 
 # --- TAB 1: ZOTERO ---
 with tab1:
@@ -1281,3 +1423,196 @@ with tab4:
                     else:
                         st.error("Zotero not connected.")
             st.markdown("</div>", unsafe_allow_html=True)
+
+# --- TAB 5: SEMINARS ---
+with tab5:
+    st.markdown("<h3>🎥 Research Seminars & Lectures</h3>", unsafe_allow_html=True)
+    st.markdown("<p style='color: #94a3b8;'>View recorded seminars, webinars, and lectures. Add new recordings to sync them automatically to Zotero and OneDrive.</p>", unsafe_allow_html=True)
+    
+    # 1. Form to Add a New Seminar
+    with st.expander("➕ Register a New Seminar Recording"):
+        with st.form("add_seminar_form"):
+            sem_title = st.text_input("Seminar Title:", placeholder="E.g., Finite Element Analysis of Historical Masonry Walls")
+            sem_presenter = st.text_input("Presenter(s):", placeholder="E.g., Dr. Rebecca Napolitano, Márcio Ferreira")
+            sem_event = st.text_input("Event / Meeting Name:", placeholder="E.g., PSU Research Webinar Series")
+            sem_date = st.text_input("Date / Year:", placeholder="E.g., 2026-06-02")
+            sem_url = st.text_input("Video URL (YouTube, Vimeo, OneDrive, Teams):", placeholder="E.g., https://www.youtube.com/watch?v=...")
+            sem_summary = st.text_area("Key Takeaways & Summary:", height=100, placeholder="Brief summary of the main points discussed...")
+            
+            submit_sem = st.form_submit_button("💾 Save Seminar Recording", use_container_width=True)
+            
+        if submit_sem:
+            if not sem_title or not sem_url:
+                st.warning("⚠️ Title and Video URL are required fields.")
+            else:
+                with st.spinner("Saving seminar to Zotero and syncing..."):
+                    if zot:
+                        try:
+                            # Find parent collection
+                            collections_list = zot.collections()
+                            parent_key = None
+                            for c in collections_list:
+                                if "PhD" in c['data']['name']:
+                                    parent_key = c['data']['key']
+                                    break
+                            if not parent_key:
+                                resp_p = zot.create_collections([{'name': 'PhD - Architectural Engineering - Márcio Ferreira'}])
+                                parent_key = list(resp_p['successful'].values())[0]['key']
+                                
+                            # Find or create Seminars collection
+                            seminars_key = None
+                            for c in collections_list:
+                                if "Seminars" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
+                                    seminars_key = c['data']['key']
+                                    break
+                            if not seminars_key:
+                                resp_s = zot.create_collections([{'name': 'Seminars', 'parentCollection': parent_key}])
+                                if resp_s['successful']:
+                                    seminars_key = list(resp_s['successful'].values())[0]['key']
+                                    
+                            # Create Zotero Item
+                            template = zot.item_template('presentation')
+                            template['title'] = sem_title
+                            template['url'] = sem_url
+                            template['date'] = sem_date
+                            template['meetingName'] = sem_event
+                            template['abstractNote'] = sem_summary
+                            if seminars_key:
+                                template['collections'] = [seminars_key]
+                                
+                            # Presenters list
+                            parts = sem_presenter.split(',')
+                            creators = []
+                            for p in parts:
+                                name_parts = p.strip().split()
+                                last = name_parts[-1] if name_parts else ""
+                                first = " ".join(name_parts[:-1]) if len(name_parts) > 1 else ""
+                                creators.append({'creatorType': 'presenter', 'firstName': first, 'lastName': last})
+                            template['creators'] = creators
+                            
+                            resp = zot.create_items([template])
+                            if resp.get('successful'):
+                                st.success("✅ Seminar saved securely to Zotero!")
+                                
+                                # Sync to OneDrive
+                                if st.session_state.onedrive_path:
+                                    sync_seminar_to_onedrive(sem_title, sem_presenter, sem_date, sem_event, sem_url, sem_summary)
+                                    st.success("📤 Automatically synced to your shared OneDrive folder!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to save to Zotero.")
+                        except Exception as e:
+                            st.error(f"Error saving seminar: {e}")
+                    else:
+                        st.error("Zotero is not connected.")
+                        
+    # 2. Display Seminars Gallery
+    if zot:
+        try:
+            collections_list = zot.collections()
+            parent_key = None
+            for c in collections_list:
+                if "PhD" in c['data']['name']:
+                    parent_key = c['data']['key']
+                    break
+            
+            seminars_key = None
+            if parent_key:
+                for c in collections_list:
+                    if "Seminars" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
+                        seminars_key = c['data']['key']
+                        break
+                        
+            if seminars_key:
+                seminar_items = zot.collection_items(seminars_key)
+                # Filter to presentations
+                seminars = [item for item in seminar_items if item.get('data', {}).get('itemType') == 'presentation']
+                # Sort by date added (newest first)
+                seminars.sort(key=lambda x: x.get('data', {}).get('dateAdded', ''), reverse=True)
+                
+                if seminars:
+                    st.markdown("<h4>Recorded Seminars Constellation</h4>", unsafe_allow_html=True)
+                    for idx_sem, item in enumerate(seminars):
+                        data = item.get('data', {})
+                        title = data.get('title', 'Untitled')
+                        url = data.get('url', '')
+                        date = data.get('date', 'Unknown Date')
+                        event = data.get('meetingName', 'General')
+                        abstract = data.get('abstractNote', '')
+                        
+                        creators = data.get('creators', [])
+                        presenters_list = []
+                        for creator in creators:
+                            name = creator.get('lastName') or creator.get('firstName') or creator.get('name')
+                            if name:
+                                presenters_list.append(name)
+                        presenters = ", ".join(presenters_list) if presenters_list else "Unknown"
+                        
+                        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+                        col_vid, col_meta = st.columns([0.55, 0.45])
+                        
+                        with col_vid:
+                            # Check if the URL is a supported video link
+                            is_supported_video = False
+                            is_direct_downloadable = False
+                            if url:
+                                url_lower = url.lower()
+                                if any(x in url_lower for x in ['youtube.com', 'youtu.be', 'vimeo.com']):
+                                    is_supported_video = True
+                                elif any(url_lower.endswith(ext) for ext in ['.mp4', '.webm', '.ogg', '.mov']):
+                                    is_supported_video = True
+                                    is_direct_downloadable = True
+                                    
+                            if is_supported_video:
+                                st.video(url)
+                            elif url:
+                                st.info("📹 Video requires authentication or direct browser viewing.")
+                                st.link_button("🔗 Open Video Link", url, use_container_width=True)
+                            else:
+                                st.warning("⚠️ No video link attached to this presentation.")
+                                
+                        with col_meta:
+                            st.markdown(f"<h4 style='margin-top:0;'>{title}</h4>", unsafe_allow_html=True)
+                            st.markdown(f"**👤 Presenter(s):** {presenters}")
+                            st.markdown(f"**📅 Date:** {date} | **🏛️ Event:** {event}")
+                            if abstract:
+                                st.markdown(f"**📝 Summary:**  \n*{abstract}*")
+                            
+                            zotero_url = item.get('links', {}).get('alternate', {}).get('href', '#')
+                            st.markdown(f"[🔗 Open Presentation in Zotero Web]({zotero_url})")
+                            
+                            # Local direct video downloader button
+                            if is_local_env() and is_direct_downloadable and st.session_state.onedrive_path:
+                                def clean_filename_part(text):
+                                    if not text:
+                                        return ""
+                                    text = re.sub(r'[\\/*?:"<>|]', '', text)
+                                    return text.encode('ascii', 'ignore').decode('ascii').strip()
+                                    
+                                clean_title = clean_filename_part(title)[:60]
+                                safe_presenter = clean_filename_part(presenters.split(',')[0]) if presenters else "Presenter"
+                                filename_base = f"{safe_presenter}_{date}_{clean_title}"
+                                filename_base = re.sub(r'\s+', ' ', filename_base).strip().strip('.')
+                                
+                                video_local_path = os.path.join(st.session_state.onedrive_path, "Seminars", f"{filename_base}.mp4")
+                                if os.path.exists(video_local_path):
+                                    st.button("✅ Video File Synced to OneDrive", key=f"dl_sem_{idx_sem}", disabled=True, use_container_width=True)
+                                else:
+                                    if st.button("📥 Download Video File to OneDrive", key=f"dl_sem_{idx_sem}", use_container_width=True):
+                                        with st.spinner("Downloading video file to your local OneDrive (this may take a minute)..."):
+                                            success = download_video_file_to_onedrive(url, filename_base)
+                                            if success:
+                                                st.success("🎉 Video downloaded successfully into your shared OneDrive '/Seminars' folder!")
+                                                st.rerun()
+                                            else:
+                                                st.error("Failed to download the video file. Please verify the URL is a direct download link.")
+                            
+                        st.markdown("</div>", unsafe_allow_html=True)
+                else:
+                    st.info("No recorded seminars found. Register your first seminar using the expander above!")
+            else:
+                st.info("No 'Seminars' collection found in Zotero. Register a new seminar recording above to automatically create it!")
+        except Exception as e:
+            st.error(f"Failed to load seminars: {e}")
+    else:
+        st.error("Zotero disconnected.")
