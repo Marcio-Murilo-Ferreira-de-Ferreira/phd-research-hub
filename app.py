@@ -500,9 +500,9 @@ with tab1:
                     # Highlight if added in the last 7 days
                     badge_html = ""
                     if is_new:
-                        badge_html = f"<span style='background-color:#0ea5e9; color:white; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:bold; margin-right:8px;'>🆕 New (Added: {formatted_date})</span>"
+                        badge_html = f"<span style='background-color:#0ea5e9; color:white; padding:3px 8px; border-radius:12px; font-size:1.0rem; font-weight:bold; margin-right:8px;'>🆕 New (Added: {formatted_date})</span>"
                         
-                    st.markdown(f"**{badge_html}{title}** <br/><span style='color:#94a3b8; font-size:0.9em;'>Type: {item_type} | {col_tag}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**{badge_html}{title}** <br/><span style='color:#94a3b8; font-size:1.05em;'>Type: {item_type} | {col_tag}</span>", unsafe_allow_html=True)
                     st.markdown(f"[🔗 Open in Zotero Web]({zotero_url})")
                     st.markdown("<hr style='border-color: rgba(255,255,255,0.1); margin: 10px 0;'>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -639,9 +639,9 @@ with tab2:
                 else:
                     applied_terms = key_terms
                     
-                query_str = "+".join(applied_terms)
+                query_str = " AND ".join(applied_terms)
                 per_page = 60 if "Global Academic Index (OpenAlex)" not in target_databases else 25
-                url = f"https://api.openalex.org/works?search={query_str}&per-page={per_page}"
+                url = f"https://api.openalex.org/works?filter=title_and_abstract.search:{requests.utils.quote(query_str)}&per-page={per_page}"
                 
                 try:
                     response = requests.get(url).json()
@@ -1048,8 +1048,8 @@ with tab4:
                         else:
                             applied_terms = key_terms
                             
-                        cleaned_query = "+".join(applied_terms)
-                        url = f"https://api.openalex.org/works?search={cleaned_query}&per-page=5"
+                        cleaned_query = " AND ".join(applied_terms)
+                        url = f"https://api.openalex.org/works?filter=title_and_abstract.search:{requests.utils.quote(cleaned_query)}&per-page=5"
                         response = requests.get(url).json()
                         results = response.get('results', [])
                         
