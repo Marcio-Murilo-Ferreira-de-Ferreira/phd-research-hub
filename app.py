@@ -1161,7 +1161,7 @@ with tab1:
                     papers.sort(key=lambda x: x.get('data', {}).get('title', '').strip().lower())
                 
                 st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-                for item in papers[:10]:  # Show up to 10 recently added papers
+                for idx, item in enumerate(papers[:10]):  # Show up to 10 recently added papers
                     data = item.get('data', {})
                     title = data.get('title', 'Untitled')
                     item_type = data.get('itemType', 'unknown')
