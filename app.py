@@ -5,6 +5,202 @@ import re
 import os
 import platform
 import datetime
+import json
+import io
+from pypdf import PdfReader
+
+# Helper functions for Lab Collaboration, Alerts, and AI RAG
+def load_lab_members():
+    config_dir = ".streamlit"
+    file_path = os.path.join(config_dir, "lab_members.json")
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def save_lab_members(members):
+    config_dir = ".streamlit"
+    os.makedirs(config_dir, exist_ok=True)
+    file_path = os.path.join(config_dir, "lab_members.json")
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(members, f, ensure_ascii=False, indent=4)
+    except Exception:
+        pass
+
+def load_alert_keywords():
+    config_dir = ".streamlit"
+    file_path = os.path.join(config_dir, "alert_keywords.txt")
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return ""
+
+def save_alert_keywords(keywords):
+    config_dir = ".streamlit"
+    os.makedirs(config_dir, exist_ok=True)
+    file_path = os.path.join(config_dir, "alert_keywords.txt")
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(keywords.strip())
+    except Exception:
+        pass
+
+def extract_text_from_pdf_path(pdf_path):
+    try:
+        reader = PdfReader(pdf_path)
+        text = ""
+        for page in reader.pages:
+            t = page.extract_text()
+            if t:
+                text += t + "\n"
+        return text
+    except Exception as e:
+        return f"Error extracting text from PDF: {e}"
+
+def extract_text_from_pdf_bytes(pdf_bytes):
+    try:
+        pdf_file = io.BytesIO(pdf_bytes)
+        reader = PdfReader(pdf_file)
+        text = ""
+        for page in reader.pages:
+            t = page.extract_text()
+            if t:
+                text += t + "\n"
+        return text
+    except Exception as e:
+        return f"Error extracting text from PDF: {e}"
+
+def get_paper_pdf_text(title, item_key, url, pdf_url=None):
+    path = st.session_state.get('onedrive_path', '')
+    if path and os.path.exists(path):
+        pdf_dir = os.path.join(path, "PDFs")
+        if os.path.exists(pdf_dir):
+            clean_title = re.sub(r'[\\/*?:"<>|]', '', title)[:60].encode('ascii', 'ignore').decode('ascii').strip().lower()
+            for filename in os.listdir(pdf_dir):
+                if filename.lower().endswith(".pdf") and clean_title in filename.lower():
+                    local_path = os.path.join(pdf_dir, filename)
+                    return extract_text_from_pdf_path(local_path)
+                    
+    if zot:
+        try:
+            children = zot.children(item_key)
+            for child in children:
+                if child.get('data', {}).get('itemType') == 'attachment' and child.get('data', {}).get('contentType') == 'application/pdf':
+                    file_bytes = zot.file(child['key'])
+                    return extract_text_from_pdf_bytes(file_bytes)
+        except Exception:
+            pass
+            
+    target_url = pdf_url or url
+    if target_url and target_url.lower().endswith(".pdf"):
+        try:
+            r = requests.get(target_url, timeout=15)
+            if r.status_code == 200 and r.content.startswith(b"%PDF"):
+                return extract_text_from_pdf_bytes(r.content)
+        except Exception:
+            pass
+            
+    return None
+
+def call_gemini(api_key, system_instruction, prompt):
+    import google.generativeai as genai
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        system_instruction=system_instruction
+    )
+    response = model.generate_content(prompt)
+    return response.text
+
+def call_openai(api_key, system_instruction, prompt):
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": prompt}
+        ]
+    )
+    return response.choices[0].message.content
+
+def check_keyword_alerts(force=False):
+    keywords = load_alert_keywords()
+    if not keywords:
+        return
+        
+    config_dir = ".streamlit"
+    last_run_file = os.path.join(config_dir, "alert_last_run.txt")
+    hits_file = os.path.join(config_dir, "alert_hits.json")
+    
+    should_run = force
+    if not should_run:
+        if os.path.exists(last_run_file):
+            try:
+                with open(last_run_file, "r") as f:
+                    last_run_str = f.read().strip()
+                last_run_dt = datetime.datetime.strptime(last_run_str, "%Y-%m-%d")
+                diff = datetime.datetime.now() - last_run_dt
+                if diff.days >= 7:
+                    should_run = True
+            except:
+                should_run = True
+        else:
+            should_run = True
+            
+    if should_run:
+        try:
+            words = re.findall(r'\b[a-zA-Z0-9-]+\b', keywords.lower())
+            query_str = " AND ".join(words[:5])
+            date_limit = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+            url = f"https://api.openalex.org/works?search={requests.utils.quote(query_str)}&filter=publication_year:{datetime.datetime.now().year}&per-page=10"
+            r = requests.get(url, timeout=10).json()
+            results = r.get('results', [])
+            
+            hits = []
+            for paper in results:
+                pub_date = paper.get('publication_date', '')
+                if pub_date >= date_limit:
+                    title = paper.get('title') or 'Untitled'
+                    abstract_inverted = paper.get('abstract_inverted_index', {})
+                    abstract = ""
+                    if abstract_inverted:
+                        word_index = []
+                        for word, positions in abstract_inverted.items():
+                            for pos in positions:
+                                word_index.append((pos, word))
+                        word_index.sort(key=lambda x: x[0])
+                        abstract = " ".join([word for pos, word in word_index])
+                    
+                    doi = paper.get('doi', '#')
+                    authorships = paper.get('authorships', [])
+                    authors = ", ".join([a['author']['display_name'] for a in authorships[:2]])
+                    if len(authorships) > 2:
+                        authors += " et al."
+                        
+                    hits.append({
+                        'title': title,
+                        'authors': authors,
+                        'year': paper.get('publication_year', 'Unknown'),
+                        'doi': doi,
+                        'abstract': abstract,
+                        'pdf_url': paper.get('best_oa_location', {}).get('pdf_url', '') if paper.get('best_oa_location') else ''
+                    })
+            
+            with open(hits_file, "w", encoding="utf-8") as f:
+                json.dump(hits, f, ensure_ascii=False, indent=4)
+                
+            with open(last_run_file, "w") as f:
+                f.write(datetime.datetime.now().strftime("%Y-%m-%d"))
+        except Exception:
+            pass
 
 # Helper function to check if local or cloud
 def is_local_env():
@@ -232,6 +428,109 @@ def update_sync_history_log(onedrive_path, new_papers):
 # Page Config (must be first)
 st.set_page_config(page_title="URM Tornado Resilience", page_icon="🌪️", layout="wide", initial_sidebar_state="collapsed")
 
+@st.dialog("Chat with Paper 💬", width="large")
+def chat_with_paper_modal(paper_info):
+    st.markdown(f"### 📄 {paper_info['title']}")
+    st.caption(f"Authors: {paper_info['authors']} | Year: {paper_info['year']}")
+    
+    api_provider = st.session_state.get("ai_provider", "Google Gemini")
+    api_key = st.session_state.get("ai_api_key", "")
+    if not api_key:
+        st.warning("⚠️ Please configure your AI API Key in the sidebar to enable chat.")
+        if st.button("Close"):
+            st.rerun()
+        return
+        
+    if "pdf_cache_key" not in st.session_state or st.session_state.pdf_cache_key != paper_info['key']:
+        with st.spinner("Extracting text from PDF (checking OneDrive, Zotero Cloud, and Web)..."):
+            pdf_text = get_paper_pdf_text(paper_info['title'], paper_info['key'], paper_info['url'], paper_info.get('pdf_url'))
+            if pdf_text:
+                st.session_state.pdf_cache_key = paper_info['key']
+                st.session_state.pdf_cache_text = pdf_text
+            else:
+                st.session_state.pdf_cache_key = paper_info['key']
+                st.session_state.pdf_cache_text = "ERROR: Could not locate or read the PDF file for this paper."
+                
+    pdf_text = st.session_state.get("pdf_cache_text", "")
+    if pdf_text.startswith("ERROR:"):
+        st.error(pdf_text)
+        if st.button("Close"):
+            st.rerun()
+        return
+        
+    st.success(f"✅ PDF text loaded successfully ({len(pdf_text)} characters)!")
+    
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+        
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+            
+    user_question = st.chat_input("Ask a question about this paper...")
+    if user_question:
+        st.session_state.chat_messages.append({"role": "user", "content": user_question})
+        with st.chat_message("user"):
+            st.write(user_question)
+            
+        with st.spinner("Analyzing paper context..."):
+            try:
+                system_inst = "You are a helpful academic research assistant. You are answering questions about the academic paper provided in the context."
+                context_snippet = pdf_text[:120000]
+                prompt = f"PAPER TEXT CONTEXT:\n{context_snippet}\n\nUSER QUESTION: {user_question}"
+                
+                if api_provider == "Google Gemini":
+                    response_text = call_gemini(api_key, system_inst, prompt)
+                else:
+                    response_text = call_openai(api_key, system_inst, prompt)
+                    
+                st.session_state.chat_messages.append({"role": "assistant", "content": response_text})
+                with st.chat_message("assistant"):
+                    st.write(response_text)
+            except Exception as e:
+                st.error(f"Error calling AI: {e}")
+                
+    col_clear, col_close = st.columns(2)
+    with col_clear:
+        if st.button("Clear History", use_container_width=True):
+            st.session_state.chat_messages = []
+            st.rerun()
+    with col_close:
+        if st.button("Close", use_container_width=True):
+            st.rerun()
+
+@st.dialog("Cite Paper 📋", width="medium")
+def cite_paper_modal(paper_info):
+    title = paper_info['title']
+    authors = paper_info['authors']
+    year = paper_info['year']
+    url = paper_info['url']
+    
+    asce_citation = f"{authors} ({year}). \"{title}.\" Zotero Library, {url}."
+    
+    authors_list = authors.split(',')
+    first_author_clean = "paper"
+    if authors_list:
+        first_author_clean = re.sub(r'\W+', '', authors_list[0].split()[-1].lower()) if authors_list[0].split() else "author"
+    first_word_title = re.sub(r'\W+', '', title.split()[0].lower()) if title.split() else "title"
+    bibtex_key = f"{first_author_clean}_{year}_{first_word_title}"
+    
+    bibtex_citation = f"""@article{{{bibtex_key},
+  title={{{title}}},
+  author={{{authors}}},
+  year={{{year}}},
+  url={{{url}}}
+}}"""
+
+    st.markdown("### 🏛️ ASCE Style Citation")
+    st.code(asce_citation, language="text")
+    
+    st.markdown("### 💻 BibTeX Reference")
+    st.code(bibtex_citation, language="bibtex")
+    
+    if st.button("Close", use_container_width=True):
+        st.rerun()
+
 @st.dialog("User Guide & Workflow 🌪️", width="large")
 def show_help_guide():
     st.markdown("""
@@ -268,6 +567,12 @@ def show_help_guide():
     * **What to do:** 
       - **Data Explorer:** Upload lab CSV or Excel test data to plot dynamic scatter plots.
       - **3D Knowledge Graph:** Click **"🚀 Generate 3D Universe"** to render a 3D gravity graph of your Zotero library and visualize how all papers connect to each other.
+      
+    #### 5️⃣ Step 5: Advanced AI RAG Chat & Lab Collaboration (V3.0)
+    * **Interactive AI Chat (Tab 1):** Click **"💬 Chat with Paper"** on any library item. Configure your Google Gemini or OpenAI API Key in the sidebar. The dashboard automatically parses the PDF text (from OneDrive, Zotero, or OpenAccess links) and starts a private, context-aware Q&A session.
+    * **Citation Exporter (Tab 1):** Click **"📋 Cite Paper"** to instantly render ASCE and BibTeX formats with copy-ready blocks.
+    * **Weekly Keyword Alerts (Tab 2):** Set your favorite keywords in the sidebar. Every time the dashboard boots, it scans OpenAlex for publications from the last 7 days. Matches appear as a notification bar at the top of the Gov tab so you can save them in one click.
+    * **Lab Collaboration Graph (Tab 3):** Add multiple Zotero accounts in the sidebar to overlay multiple researchers' libraries on the 3D graph (Lab Constellation), color-coded to visualize overlap and gaps.
       
     ---
     
@@ -327,6 +632,69 @@ h1, h2, h3 {color: #38bdf8 !important; font-weight: 800 !important; letter-spaci
 </style>
 """
 st.markdown(css_code, unsafe_allow_html=True)
+
+# Boot Alert Check
+if not st.session_state.get("checked_alerts", False):
+    check_keyword_alerts()
+    st.session_state.checked_alerts = True
+
+# --- STREAMLIT SIDEBAR CONFIGURATION ---
+with st.sidebar:
+    st.markdown("## 🛠️ Hub Configuration")
+    
+    # 1. AI RAG Settings
+    st.markdown("### 🤖 AI Chat Settings")
+    ai_provider_sel = st.selectbox("AI Model Provider:", options=["Google Gemini", "OpenAI"], index=0, key="ai_provider_select")
+    ai_key_input = st.text_input("Enter API Key:", type="password", value=st.session_state.get("ai_api_key", ""), placeholder="Paste API Key here...", key="ai_key_input")
+    if ai_key_input:
+        st.session_state.ai_api_key = ai_key_input
+        st.session_state.ai_provider = ai_provider_sel
+        st.success("✅ AI Key configuration active!")
+        
+    st.markdown("<hr style='margin: 15px 0; border-color: rgba(255,255,255,0.1);'>", unsafe_allow_html=True)
+    
+    # 2. Alert Settings
+    st.markdown("### 🔔 Weekly Alert Settings")
+    alert_kw_input = st.text_input("Alert Keywords (English):", value=load_alert_keywords(), placeholder="e.g. URM historic tornado")
+    if st.button("💾 Save Alert Keywords", use_container_width=True):
+        save_alert_keywords(alert_kw_input)
+        st.success("Alert keywords saved!")
+        check_keyword_alerts(force=True)
+        st.rerun()
+        
+    st.markdown("<hr style='margin: 15px 0; border-color: rgba(255,255,255,0.1);'>", unsafe_allow_html=True)
+    
+    # 3. Lab Members Configuration
+    st.markdown("### 👥 Lab Collaboration Settings")
+    m_list = load_lab_members()
+    
+    if m_list:
+        st.markdown("**Active Lab Members:**")
+        for idx_m, member in enumerate(m_list):
+            col_m_name, col_m_del = st.columns([0.85, 0.15])
+            with col_m_name:
+                st.markdown(f"<span style='font-size:0.9rem; color:#e2e8f0;'>👥 {member['name']} ({member['id']})</span>", unsafe_allow_html=True)
+            with col_m_del:
+                if st.button("❌", key=f"del_mem_{idx_m}_{member['id']}"):
+                    m_list.pop(idx_m)
+                    save_lab_members(m_list)
+                    st.success(f"Removed {member['name']}!")
+                    st.rerun()
+                    
+    # Form to add new lab member
+    st.markdown("<p style='font-size:0.9rem; font-weight:bold; margin-top:10px;'>➕ Add Lab Member:</p>", unsafe_allow_html=True)
+    m_name = st.text_input("Display Name:", key="add_m_name", placeholder="e.g. Rebecca Lab 1")
+    m_id = st.text_input("Zotero User ID:", key="add_m_id", placeholder="e.g. 20709248")
+    m_key = st.text_input("Zotero API Key:", key="add_m_key", type="password", placeholder="e.g. lYS46qOs...")
+    
+    if st.button("➕ Add Lab Member", use_container_width=True, key="add_lab_member_btn"):
+        if m_name and m_id and m_key:
+            m_list.append({"name": m_name, "id": m_id, "key": m_key})
+            save_lab_members(m_list)
+            st.success(f"Added {m_name} to Lab!")
+            st.rerun()
+        else:
+            st.warning("All fields required.")
 
 # Main Header (with Quick User Guide button)
 col_title, col_help = st.columns([0.83, 0.17])
@@ -820,7 +1188,31 @@ with tab1:
                         badge_html = f"<span style='background-color:#0ea5e9; color:white; padding:3px 8px; border-radius:12px; font-size:1.0rem; font-weight:bold; margin-right:8px;'>🆕 New (Added: {formatted_date})</span>"
                         
                     st.markdown(f"**{badge_html}{title}** <br/><span style='color:#94a3b8; font-size:1.05em;'>Type: {item_type} | {col_tag}</span>", unsafe_allow_html=True)
-                    st.markdown(f"[🔗 Open in Zotero Web]({zotero_url})")
+                    
+                    # Citações e Chat em colunas
+                    col_zot_btn, col_chat_btn, col_cite_btn = st.columns([0.4, 0.3, 0.3])
+                    
+                    # Extração de dados da citação e chat
+                    creators_list = []
+                    for c_auth in data.get('creators', []):
+                        n = c_auth.get('lastName') or c_auth.get('firstName') or c_auth.get('name')
+                        if n: creators_list.append(n)
+                    authors_str = ", ".join(creators_list) if creators_list else "Unknown"
+                    
+                    match_yr = re.search(r'\b\d{4}\b', str(data.get('date', '')))
+                    clean_yr = match_yr.group(0) if match_yr else "Unknown"
+                    paper_url = data.get('url', '') or zotero_url
+                    
+                    with col_zot_btn:
+                        st.markdown(f"[🔗 Open in Zotero Web]({zotero_url})")
+                    with col_chat_btn:
+                        if st.button("💬 Chat with Paper", key=f"chat_trigger_{item_key}_{idx}", use_container_width=True):
+                            st.session_state.chat_messages = []
+                            chat_with_paper_modal({'title': title, 'key': item_key, 'url': paper_url, 'authors': authors_str, 'year': clean_yr})
+                    with col_cite_btn:
+                        if st.button("📋 Cite Paper", key=f"cite_trigger_{item_key}_{idx}", use_container_width=True):
+                            cite_paper_modal({'title': title, 'authors': authors_str, 'year': clean_yr, 'url': paper_url})
+                            
                     st.markdown("<hr style='border-color: rgba(255,255,255,0.1); margin: 10px 0;'>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
             else:
@@ -862,6 +1254,82 @@ with tab1:
 # --- TAB 2: GOVERNMENT HUB ---
 with tab2:
     st.markdown("<h3>Semantic Government & Literature Search</h3>", unsafe_allow_html=True)
+    
+    # 🔔 Render Keyword Alert Hits at the top of Tab 2
+    hits_file_path = os.path.join(".streamlit", "alert_hits.json")
+    if os.path.exists(hits_file_path):
+        try:
+            with open(hits_file_path, "r", encoding="utf-8") as f:
+                alert_hits = json.load(f)
+            if alert_hits:
+                st.markdown(f"""
+                <div style='background: rgba(14, 165, 233, 0.08); border-left: 4px solid #0ea5e9; padding: 15px; border-radius: 12px; margin-bottom: 20px;'>
+                    <h4 style='margin-top:0; color:#38bdf8; font-size:1.1rem;'>🔔 Active Keyword Alerts (Weekly hits)</h4>
+                    <p style='font-size:0.92rem; color:#cbd5e1; margin-bottom:10px;'>
+                        We found <b>{len(alert_hits)} new papers</b> matching your keyword alert preferences in the last week!
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                with st.expander("🔍 View Alert Hits (Show/Hide)"):
+                    for idx_alert, paper in enumerate(alert_hits):
+                        st.markdown(f"**{paper['title']}** ({paper['year']})")
+                        st.markdown(f"<span style='color:#94a3b8; font-size:0.88rem;'>👥 {paper['authors']}</span>", unsafe_allow_html=True)
+                        col_alert_link, col_alert_save = st.columns([0.6, 0.4])
+                        with col_alert_link:
+                            st.markdown(f"[📄 View Document]({paper['doi']})")
+                        with col_alert_save:
+                            button_key = f"alert_save_{idx_alert}_{paper['title'][:10].strip()}"
+                            paper_title_lower = paper['title'].strip().lower()
+                            already_in_zot = paper_title_lower in st.session_state.get('existing_titles', set())
+                            if already_in_zot:
+                                st.button("✅ Already in Zotero", key=button_key, disabled=True, use_container_width=True)
+                            else:
+                                if st.button("📥 Save as Golden Paper", key=button_key, use_container_width=True):
+                                    if zot:
+                                        with st.spinner("Saving to Zotero (Golden Papers)..."):
+                                            try:
+                                                all_cols = zot.collections()
+                                                parent_key = None
+                                                golden_key = None
+                                                for c in all_cols:
+                                                    if "PhD" in c['data']['name']:
+                                                        parent_key = c['data']['key']
+                                                        break
+                                                if not parent_key:
+                                                    resp_p = zot.create_collections([{'name': 'PhD - Architectural Engineering'}])
+                                                    parent_key = list(resp_p['successful'].values())[0]['key']
+                                                for c in all_cols:
+                                                    if "Golden Papers" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
+                                                        golden_key = c['data']['key']
+                                                        break
+                                                if not golden_key:
+                                                    resp_c = zot.create_collections([{'name': 'Golden Papers', 'parentCollection': parent_key}])
+                                                    if resp_c['successful']:
+                                                        golden_key = list(resp_c['successful'].values())[0]['key']
+                                                
+                                                template = zot.item_template('journalArticle')
+                                                template['title'] = paper['title']
+                                                template['date'] = str(paper['year'])
+                                                template['url'] = paper['doi']
+                                                template['abstractNote'] = paper['abstract']
+                                                if golden_key:
+                                                    template['collections'] = [golden_key]
+                                                
+                                                resp = zot.create_items([template])
+                                                if resp.get('successful'):
+                                                    st.success("✅ Saved to Zotero!")
+                                                    if st.session_state.onedrive_path:
+                                                        sync_to_onedrive(paper['title'], paper['authors'], paper['year'], paper['abstract'], paper['doi'], paper['pdf_url'])
+                                                        st.success("📤 Synced to OneDrive!")
+                                                    st.session_state.existing_titles.add(paper_title_lower)
+                                                    st.rerun()
+                                            except Exception as e:
+                                                st.error(f"Error: {e}")
+                    st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin: 15px 0;'>", unsafe_allow_html=True)
+        except Exception:
+            pass
+
     st.markdown("<p style='color: #94a3b8;'>Describe your 'Golden Paper' in natural language. We'll find it, search chosen repositories, and score relevance.</p>", unsafe_allow_html=True)
     
     # 🏛️ Quick Access Portals
@@ -1272,21 +1740,52 @@ with tab3:
                         all_items = zot.items()
                         papers = [item for item in all_items if item['data'].get('itemType') not in ['attachment', 'note']]
                         
+                        # Store Márcio's papers with reader label
+                        for p in papers:
+                            p['member_name'] = "Márcio (You)"
+                            
+                        # Load lab members' libraries
+                        lab_members_list = load_lab_members()
+                        member_colors = {}
+                        color_palette = ['#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#f43f5e'] # Green, Orange, Red, Purple, Pink, Rose
+                        
+                        # Fetch papers for other lab members
+                        for idx_m, member in enumerate(lab_members_list):
+                            try:
+                                m_zot = zotero.Zotero(member['id'], 'user', member['key'])
+                                m_items = m_zot.items(limit=30)
+                                m_papers = [item for item in m_items if item['data'].get('itemType') not in ['attachment', 'note']]
+                                for mp in m_papers:
+                                    mp['member_name'] = member['name']
+                                papers.extend(m_papers)
+                                member_colors[member['name']] = color_palette[idx_m % len(color_palette)]
+                            except Exception:
+                                pass
+                                
+                        member_colors["Márcio (You)"] = '#3a86ff' # Blue for Márcio
+                        
                         if len(papers) < 1:
-                            st.warning("You need papers in your Zotero library to form a constellation!")
+                            st.warning("You need papers in Zotero library to form a constellation!")
                         else:
                             G = nx.Graph()
                             
-                            # Add nodes
+                            # Add nodes with reader metadata
                             for p in papers:
-                                G.add_node(p['key'], title=p['data'].get('title', 'Untitled'))
+                                G.add_node(p['key'], title=p['data'].get('title', 'Untitled'), reader=p.get('member_name', 'Unknown'))
                             
-                            # Create simulated edges based on shared collections
+                            # Create simulated edges based on shared collections OR title keyword overlap
                             for i in range(len(papers)):
                                 for j in range(i+1, len(papers)):
                                     col_i = set(papers[i]['data'].get('collections', []))
                                     col_j = set(papers[j]['data'].get('collections', []))
-                                    if len(col_i.intersection(col_j)) > 0:
+                                    shared_cols = col_i.intersection(col_j)
+                                    
+                                    # Similarity link across readers
+                                    title_i_words = set(re.findall(r'\b\w{4,}\b', papers[i]['data'].get('title', '').lower()))
+                                    title_j_words = set(re.findall(r'\b\w{4,}\b', papers[j]['data'].get('title', '').lower()))
+                                    shared_words = title_i_words.intersection(title_j_words)
+                                    
+                                    if len(shared_cols) > 0 or len(shared_words) >= 3:
                                         G.add_edge(papers[i]['key'], papers[j]['key'])
                             
                             # Generate 3D layout
@@ -1305,7 +1804,7 @@ with tab3:
                             edge_trace = go.Scatter3d(
                                 x=edge_x, y=edge_y, z=edge_z,
                                 mode='lines',
-                                line=dict(color='rgba(255,255,255,0.2)', width=2),
+                                line=dict(color='rgba(255,255,255,0.15)', width=2),
                                 hoverinfo='none'
                             )
                             
@@ -1313,12 +1812,15 @@ with tab3:
                             node_y = []
                             node_z = []
                             node_text = []
+                            node_color = []
                             for node in G.nodes():
                                 x, y, z = pos[node]
                                 node_x.append(x)
                                 node_y.append(y)
                                 node_z.append(z)
-                                node_text.append(G.nodes[node]['title'])
+                                reader_name = G.nodes[node]['reader']
+                                node_text.append(f"Title: {G.nodes[node]['title']}<br>Reader: {reader_name}")
+                                node_color.append(member_colors.get(reader_name, '#a855f7'))
                                 
                             node_trace = go.Scatter3d(
                                 x=node_x, y=node_y, z=node_z,
@@ -1327,8 +1829,8 @@ with tab3:
                                 text=node_text,
                                 marker=dict(
                                     size=8,
-                                    color='#3a86ff',
-                                    line=dict(width=2, color='#ffffff')
+                                    color=node_color,
+                                    line=dict(width=1.5, color='#ffffff')
                                 )
                             )
                             
