@@ -77,6 +77,82 @@ def stem_word(w):
         return w[:-1]
     return w
 
+def extract_youtube_info(url):
+    title = ""
+    presenter = ""
+    date = ""
+    summary = ""
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+    
+    # 1. Fetch via oEmbed first as it is fast and reliable for Title/Channel
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url={requests.utils.quote(url)}&format=json"
+        r = requests.get(oembed_url, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            title = data.get("title", "")
+            presenter = data.get("author_name", "")
+    except Exception:
+        pass
+
+    # 2. Fetch raw HTML to parse Date and Description/Summary
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            html = r.text
+            
+            # Date parsing
+            date_match = re.search(r'itemprop="uploadDate"\s+content="([^"]+)"', html)
+            if not date_match:
+                date_match = re.search(r'itemprop="datePublished"\s+content="([^"]+)"', html)
+            
+            if date_match:
+                date = date_match.group(1).split('T')[0]
+            else:
+                json_date = re.search(r'"uploadDate":"([^"]+)"', html)
+                if json_date:
+                    date = json_date.group(1).split('T')[0]
+            
+            # Summary/Description parsing
+            desc_match = re.search(r'name="description"\s+content="([^"]+)"', html)
+            if not desc_match:
+                desc_match = re.search(r'property="og:description"\s+content="([^"]+)"', html)
+                
+            if desc_match:
+                summary = desc_match.group(1)
+            else:
+                json_desc = re.search(r'"shortDescription":"([^"]+)"', html)
+                if json_desc:
+                    try:
+                        summary = json_desc.group(1).encode('utf-8').decode('unicode_escape', errors='ignore')
+                    except Exception:
+                        summary = json_desc.group(1)
+            
+            # If oEmbed failed, fallback to HTML parsing for title/presenter
+            if not title:
+                title_match = re.search(r'name="title"\s+content="([^"]+)"', html)
+                if not title_match:
+                    title_match = re.search(r'property="og:title"\s+content="([^"]+)"', html)
+                if title_match:
+                    title = title_match.group(1)
+                    
+            if not presenter:
+                pres_match = re.search(r'span itemprop="author".*?link itemprop="name"\s+content="([^"]+)"', html, re.DOTALL)
+                if pres_match:
+                    presenter = pres_match.group(1)
+    except Exception:
+        pass
+        
+    return {
+        "title": title.strip() if title else "",
+        "presenter": presenter.strip() if presenter else "",
+        "date": date.strip() if date else "",
+        "summary": summary.strip() if summary else ""
+    }
+
 def check_if_new_and_format(date_str):
     if not date_str:
         return False, ""
@@ -344,8 +420,8 @@ def sync_seminar_to_onedrive(title, presenters, date, event, url, abstract):
     if not path or not os.path.exists(path):
         return False
     
-    # Create folder Seminars inside OneDrive path
-    seminars_dir = os.path.join(path, "Seminars")
+    # Create folder Videos - Web Library inside OneDrive path
+    seminars_dir = os.path.join(path, "Videos - Web Library")
     os.makedirs(seminars_dir, exist_ok=True)
     
     # Clean filename
@@ -399,8 +475,8 @@ def download_video_file_to_onedrive(video_url, filename_base):
     try:
         response = requests.get(video_url, stream=True, timeout=30)
         if response.status_code == 200:
-            os.makedirs(os.path.join(path, "Seminars"), exist_ok=True)
-            video_path = os.path.join(path, "Seminars", f"{filename_base}.mp4")
+            os.makedirs(os.path.join(path, "Videos - Web Library"), exist_ok=True)
+            video_path = os.path.join(path, "Videos - Web Library", f"{filename_base}.mp4")
             with open(video_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=1024*1024):
                     if chunk:
@@ -431,8 +507,17 @@ def sync_all_zotero_to_onedrive():
         for c in collections:
             if "Golden Papers" in c['data']['name']:
                 golden_key = c['data']['key']
-            elif "Seminars" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
+                
+        # Resolve Videos - Web Library first, with fallback to Seminars
+        for c in collections:
+            if "Videos - Web Library" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
                 seminars_key = c['data']['key']
+                break
+        if not seminars_key:
+            for c in collections:
+                if "Seminars" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
+                    seminars_key = c['data']['key']
+                    break
                 
         synced_new_papers = []
         synced_count = 0
@@ -553,10 +638,10 @@ def sync_all_zotero_to_onedrive():
                     if not filename_base:
                         filename_base = "Seminar_Recording"
                         
-                    md_path = os.path.join(path, "Seminars", f"{filename_base}.md")
+                    md_path = os.path.join(path, "Videos - Web Library", f"{filename_base}.md")
                     if not os.path.exists(md_path):
-                        # Create folder Seminars inside OneDrive path
-                        os.makedirs(os.path.join(path, "Seminars"), exist_ok=True)
+                        # Create folder Videos - Web Library inside OneDrive path
+                        os.makedirs(os.path.join(path, "Videos - Web Library"), exist_ok=True)
                         md_content = f"""# 🎥 Seminar Reference Card
 **Title:** {title}
 **Presenter(s):** {presenters}
@@ -1435,6 +1520,10 @@ with tab5:
             st.session_state.sem_title_input = ""
         if 'sem_presenter_input' not in st.session_state:
             st.session_state.sem_presenter_input = ""
+        if 'sem_date_input' not in st.session_state:
+            st.session_state.sem_date_input = ""
+        if 'sem_summary_input' not in st.session_state:
+            st.session_state.sem_summary_input = ""
             
         sem_url = st.text_input("Video URL (YouTube, Vimeo, OneDrive, Teams):", placeholder="E.g., https://www.youtube.com/watch?v=...")
         
@@ -1442,25 +1531,22 @@ with tab5:
         if sem_url and any(x in sem_url.lower() for x in ['youtube.com', 'youtu.be']):
             if st.button("⚡ Auto-Fetch YouTube Info", use_container_width=True):
                 with st.spinner("Fetching YouTube details..."):
-                    try:
-                        oembed_url = f"https://www.youtube.com/oembed?url={requests.utils.quote(sem_url)}&format=json"
-                        r = requests.get(oembed_url, timeout=5)
-                        if r.status_code == 200:
-                            data = r.json()
-                            st.session_state.sem_title_input = data.get("title", "")
-                            st.session_state.sem_presenter_input = data.get("author_name", "")
-                            st.success("✅ Successfully fetched YouTube details!")
-                            st.rerun()
-                        else:
-                            st.warning("⚠️ Could not fetch YouTube details. Please fill manually.")
-                    except Exception:
-                        st.warning("⚠️ Error fetching YouTube details. Please fill manually.")
+                    info = extract_youtube_info(sem_url)
+                    if info["title"] or info["presenter"] or info["date"] or info["summary"]:
+                        st.session_state.sem_title_input = info["title"]
+                        st.session_state.sem_presenter_input = info["presenter"]
+                        st.session_state.sem_date_input = info["date"]
+                        st.session_state.sem_summary_input = info["summary"]
+                        st.success("✅ Successfully fetched YouTube details!")
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ Could not fetch YouTube details. Please fill manually.")
                         
         sem_title = st.text_input("Seminar Title:", value=st.session_state.sem_title_input, placeholder="E.g., Finite Element Analysis of Historical Masonry Walls")
         sem_presenter = st.text_input("Presenter(s):", value=st.session_state.sem_presenter_input, placeholder="E.g., Dr. Rebecca Napolitano, Márcio Ferreira")
         sem_event = st.text_input("Event / Meeting Name:", placeholder="E.g., PSU Research Webinar Series")
-        sem_date = st.text_input("Date / Year:", placeholder="E.g., 2026-06-02")
-        sem_summary = st.text_area("Key Takeaways & Summary:", height=100, placeholder="Brief summary of the main points discussed...")
+        sem_date = st.text_input("Date / Year:", value=st.session_state.sem_date_input, placeholder="E.g., 2026-06-02")
+        sem_summary = st.text_area("Key Takeaways & Summary:", value=st.session_state.sem_summary_input, height=150, placeholder="Brief summary of the main points discussed...")
         
         submit_sem = st.button("💾 Save Seminar Recording", use_container_width=True)
         
@@ -1482,14 +1568,14 @@ with tab5:
                                 resp_p = zot.create_collections([{'name': 'PhD - Architectural Engineering - Márcio Ferreira'}])
                                 parent_key = list(resp_p['successful'].values())[0]['key']
                                 
-                            # Find or create Seminars collection
+                            # Find or create Videos - Web Library collection
                             seminars_key = None
                             for c in collections_list:
-                                if "Seminars" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
+                                if "Videos - Web Library" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
                                     seminars_key = c['data']['key']
                                     break
                             if not seminars_key:
-                                resp_s = zot.create_collections([{'name': 'Seminars', 'parentCollection': parent_key}])
+                                resp_s = zot.create_collections([{'name': 'Videos - Web Library', 'parentCollection': parent_key}])
                                 if resp_s['successful']:
                                     seminars_key = list(resp_s['successful'].values())[0]['key']
                                     
@@ -1525,6 +1611,8 @@ with tab5:
                                 # Reset session state inputs
                                 st.session_state.sem_title_input = ""
                                 st.session_state.sem_presenter_input = ""
+                                st.session_state.sem_date_input = ""
+                                st.session_state.sem_summary_input = ""
                                 st.rerun()
                             else:
                                 st.error("Failed to save to Zotero.")
@@ -1546,9 +1634,14 @@ with tab5:
             seminars_key = None
             if parent_key:
                 for c in collections_list:
-                    if "Seminars" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
+                    if "Videos - Web Library" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
                         seminars_key = c['data']['key']
                         break
+                if not seminars_key:
+                    for c in collections_list:
+                        if "Seminars" in c['data']['name'] and c['data'].get('parentCollection') == parent_key:
+                            seminars_key = c['data']['key']
+                            break
                         
             if seminars_key:
                 seminar_items = zot.collection_items(seminars_key)
@@ -1621,7 +1714,7 @@ with tab5:
                                 filename_base = f"{safe_presenter}_{date}_{clean_title}"
                                 filename_base = re.sub(r'\s+', ' ', filename_base).strip().strip('.')
                                 
-                                video_local_path = os.path.join(st.session_state.onedrive_path, "Seminars", f"{filename_base}.mp4")
+                                video_local_path = os.path.join(st.session_state.onedrive_path, "Videos - Web Library", f"{filename_base}.mp4")
                                 if os.path.exists(video_local_path):
                                     st.button("✅ Video File Synced to OneDrive", key=f"dl_sem_{idx_sem}", disabled=True, use_container_width=True)
                                 else:
@@ -1629,7 +1722,7 @@ with tab5:
                                         with st.spinner("Downloading video file to your local OneDrive (this may take a minute)..."):
                                             success = download_video_file_to_onedrive(url, filename_base)
                                             if success:
-                                                st.success("🎉 Video downloaded successfully into your shared OneDrive '/Seminars' folder!")
+                                                st.success("🎉 Video downloaded successfully into your shared OneDrive '/Videos - Web Library' folder!")
                                                 st.rerun()
                                             else:
                                                 st.error("Failed to download the video file. Please verify the URL is a direct download link.")
@@ -1638,7 +1731,7 @@ with tab5:
                 else:
                     st.info("No recorded seminars found. Register your first seminar using the expander above!")
             else:
-                st.info("No 'Seminars' collection found in Zotero. Register a new seminar recording above to automatically create it!")
+                st.info("No 'Videos - Web Library' collection found in Zotero. Register a new seminar recording above to automatically create it!")
         except Exception as e:
             st.error(f"Failed to load seminars: {e}")
     else:
