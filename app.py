@@ -608,6 +608,13 @@ if "onedrive_path" not in st.session_state:
     st.session_state.onedrive_path = load_onedrive_path()
 if "sync_status" not in st.session_state:
     st.session_state.sync_status = None
+if "ai_api_key" not in st.session_state:
+    st.session_state.ai_api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("OPENAI_API_KEY") or ""
+if "ai_provider" not in st.session_state:
+    if st.secrets.get("OPENAI_API_KEY") and not st.secrets.get("GEMINI_API_KEY"):
+        st.session_state.ai_provider = "OpenAI"
+    else:
+        st.session_state.ai_provider = "Google Gemini"
 
 # --- PREMIUM MODERN CSS ---
 # Utilizing Inter font, glassmorphism, dark mode aesthetics, and micro-animations
@@ -644,7 +651,8 @@ with st.sidebar:
     
     # 1. AI RAG Settings
     st.markdown("### 🤖 AI Chat Settings")
-    ai_provider_sel = st.selectbox("AI Model Provider:", options=["Google Gemini", "OpenAI"], index=0, key="ai_provider_select")
+    default_prov_idx = 1 if st.session_state.get("ai_provider") == "OpenAI" else 0
+    ai_provider_sel = st.selectbox("AI Model Provider:", options=["Google Gemini", "OpenAI"], index=default_prov_idx, key="ai_provider_select")
     ai_key_input = st.text_input("Enter API Key:", type="password", value=st.session_state.get("ai_api_key", ""), placeholder="Paste API Key here...", key="ai_key_input")
     if ai_key_input:
         st.session_state.ai_api_key = ai_key_input
