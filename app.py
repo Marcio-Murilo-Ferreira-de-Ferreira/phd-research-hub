@@ -232,6 +232,52 @@ def update_sync_history_log(onedrive_path, new_papers):
 # Page Config (must be first)
 st.set_page_config(page_title="URM Tornado Resilience", page_icon="🌪️", layout="wide", initial_sidebar_state="collapsed")
 
+@st.dialog("User Guide & Workflow 🌪️", width="large")
+def show_help_guide():
+    st.markdown("""
+    ### Welcome to the URM Tornado Resilience PhD Research Hub! 🌪️
+    This guide explains the step-by-step workflow of this dashboard, designed to connect Zotero libraries, federal/academic databases, and OneDrive folders seamlessly.
+    
+    ---
+    
+    ### 📋 Recommended Step-by-Step Workflow:
+    
+    #### 1️⃣ Step 1: Discovering Papers (Tabs 2 & 4)
+    * **Where to go:** Go to **🏛️ Gov Databases** (for FEMA, NIST, NOAA, USGS, USACE, SimCenter, etc.) or **🤖 AI Paper Search** (for OpenAlex global index).
+    * **What to do:** Describe your search target in the text area (English works best!). Choose databases and click **AI Semantic Search**.
+    * **Relevance Filtering:** The system automatically cleans up academic noise, performs scientific stemming, and displays matches with a local relevance score. Papers below a 40% match are automatically filtered out to ensure you only see highly relevant materials.
+    * **Action:** When you find a good paper, click **"Save as Golden Paper"** (Tab 2) or **"Smart Save to Zotero"** (Tab 4). This immediately registers the paper in Zotero Cloud and places it in a smart subcollection.
+    
+    #### 2️⃣ Step 2: Adding Video Lectures & Seminars (Tab 5)
+    * **Where to go:** Go to **🎥 Seminars**.
+    * **What to do:** Paste any seminar recording link (YouTube, Vimeo, OneDrive, Teams).
+    * **Auto-Fetch (YouTube):** If it's a YouTube link, click the **"⚡ Auto-Fetch YouTube Info"** button. The dashboard will automatically scrape and pre-fill the **Title**, **Presenter** (channel name), **Date/Year**, and **Summary** from the YouTube description.
+    * **Action:** Review the details, make any adjustments, and click **"💾 Save Seminar Recording"**. This registers it as a `presentation` item in Zotero under `"Videos - Web Library"`.
+    
+    #### 3️⃣ Step 3: Local Sync to OneDrive (Tab 1)
+    * **Where to go:** Go to **📚 Zotero Library**.
+    * **What to do:** Open the dashboard **locally on Márcio's computer** (make sure your OneDrive path is configured in the text box under Tab 1) and click **"🔄 Refresh"**.
+    * **How it syncs:** The system automatically checks Zotero Cloud for any newly saved papers or videos. For each new item:
+      1. Downloads the Open Access PDF (if available).
+      2. Creates a formatted Markdown Summary Card.
+      3. Saves everything directly to the `/SummaryCards`, `/PDFs`, and `/Videos - Web Library` folders in your shared OneDrive.
+      4. Logs the entry chronologically in the **`Sync_History_Log.md`** file at the root of your OneDrive (newest additions at the top).
+    
+    #### 4️⃣ Step 4: Exploring and Visualizing (Tab 3)
+    * **Where to go:** Go to **📊 Analytics**.
+    * **What to do:** 
+      - **Data Explorer:** Upload lab CSV or Excel test data to plot dynamic scatter plots.
+      - **3D Knowledge Graph:** Click **"🚀 Generate 3D Universe"** to render a 3D gravity graph of your Zotero library and visualize how all papers connect to each other.
+      
+    ---
+    
+    ### 💡 Pro-Tips:
+    * **🆕 New Badge:** To help Dr. Rebecca easily spot recent additions, any paper added to Zotero in the last 7 days will automatically show a bright blue `🆕 New (Added: DD/MM)` badge next to its title.
+    * **Folder Renaming:** If you want your folders to stay sorted at the top of Zotero, you can rename them directly in Zotero to `01. Golden Papers` and `02. Videos - Web Library`. The Dashboard is smart enough to recognize them and won't create duplicates!
+    """)
+    if st.button("Close Guide", use_container_width=True):
+        st.rerun()
+
 # Credentials (Loaded securely with local fallbacks)
 ZOTERO_USER_ID = st.secrets.get("ZOTERO_USER_ID", "20709248")
 ZOTERO_API_KEY = st.secrets.get("ZOTERO_API_KEY", "lYS46qOsMOM0tyLY3WPE2nxt")
@@ -282,9 +328,15 @@ h1, h2, h3 {color: #38bdf8 !important; font-weight: 800 !important; letter-spaci
 """
 st.markdown(css_code, unsafe_allow_html=True)
 
-# Main Header
-st.markdown("<h1>🌪️ PhD Research Hub</h1>", unsafe_allow_html=True)
-st.markdown("<p style='font-size: 1.2rem; color: #94a3b8; margin-bottom: 2rem;'>Unreinforced Masonry (URM) Tornado Resilience | Dr. Rebecca Napolitano's Lab</p>", unsafe_allow_html=True)
+# Main Header (with Quick User Guide button)
+col_title, col_help = st.columns([0.83, 0.17])
+with col_title:
+    st.markdown("<h1 style='margin-top: -10px;'>🌪️ PhD Research Hub</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='font-size: 1.2rem; color: #94a3b8; margin-bottom: 2rem;'>Unreinforced Masonry (URM) Tornado Resilience | Dr. Rebecca Napolitano's Lab</p>", unsafe_allow_html=True)
+with col_help:
+    st.write("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    if st.button("📖 Quick User Guide", use_container_width=True):
+        show_help_guide()
 
 # Zotero Connection
 try:
