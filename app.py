@@ -2,6 +2,120 @@ import streamlit as st
 from pyzotero import zotero
 import requests
 import re
+import os
+import platform
+import datetime
+
+# Helper function to check if local or cloud
+def is_local_env():
+    # Streamlit Cloud runs on Linux/Debian. Márcio's computer is Windows.
+    return os.name == 'nt' or platform.system() == 'Windows'
+
+def load_onedrive_path():
+    if not is_local_env():
+        return ""
+    # Look in the .streamlit folder of the app
+    config_dir = ".streamlit"
+    path_file = os.path.join(config_dir, "onedrive_path.txt")
+    if os.path.exists(path_file):
+        try:
+            with open(path_file, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    # Default Penn State OneDrive path fallback
+    default_path = r"C:\Users\Márcio\The Pennsylvania State University\Napolitano, Rebecca - Papers"
+    if os.path.exists(default_path):
+        return default_path
+    return ""
+
+def save_onedrive_path(path):
+    if not is_local_env():
+        return
+    config_dir = ".streamlit"
+    os.makedirs(config_dir, exist_ok=True)
+    path_file = os.path.join(config_dir, "onedrive_path.txt")
+    try:
+        with open(path_file, "w", encoding="utf-8") as f:
+            f.write(path.strip())
+    except Exception:
+        pass
+
+def check_if_new_and_format(date_str):
+    if not date_str:
+        return False, ""
+    try:
+        date_part = date_str.split('T')[0]
+        dt = datetime.datetime.strptime(date_part, "%Y-%m-%d")
+        now = datetime.datetime.now()
+        diff = now - dt
+        is_new = (0 <= diff.days <= 7)
+        formatted_date = dt.strftime("%d/%m/%Y")
+        return is_new, formatted_date
+    except Exception:
+        return False, ""
+
+def update_sync_history_log(onedrive_path, new_papers):
+    log_path = os.path.join(onedrive_path, "Sync_History_Log.md")
+    
+    # Read existing entries
+    existing_content = ""
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                content_lines = []
+                found_separator = False
+                for line in lines:
+                    if found_separator:
+                        content_lines.append(line)
+                    elif line.strip() == "---":
+                        found_separator = True
+                existing_content = "".join(content_lines).strip()
+        except Exception:
+            pass
+            
+    # Format new papers (newest first)
+    new_entries = []
+    for paper in reversed(new_papers):
+        title = paper['title']
+        authors = paper['authors']
+        year = paper['year']
+        date_added = paper['date_added']
+        
+        formatted_date = "Unknown Date"
+        if date_added:
+            try:
+                date_part = date_added.split('T')[0]
+                dt = datetime.datetime.strptime(date_part, "%Y-%m-%d")
+                formatted_date = dt.strftime("%d/%m/%Y")
+            except:
+                pass
+                
+        new_entries.append(f"### 📄 {title}\n"
+                           f"* **Authors:** {authors}\n"
+                           f"* **Year:** {year}\n"
+                           f"* **Zotero Added Date:** {formatted_date}\n"
+                           f"* **OneDrive Sync Date:** {datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n")
+                           
+    new_content_str = "".join(new_entries)
+    
+    header = (
+        "# OneDrive Sync History Log\n"
+        "*Automatically generated log of academic papers synced from Zotero to this folder.*\n\n"
+        "This file provides a chronological view of new papers added by you or Dr. Rebecca Napolitano. "
+        "Files inside `/PDFs` and `/SummaryCards` folders are organized alphabetically, but you can consult "
+        "this file to check the latest additions at a glance!\n\n"
+        "---\n\n"
+    )
+    
+    full_content = header + new_content_str + (existing_content if existing_content else "")
+    
+    try:
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write(full_content)
+    except Exception:
+        pass
 
 # Page Config (must be first)
 st.set_page_config(page_title="URM Tornado Resilience", page_icon="🌪️", layout="wide", initial_sidebar_state="collapsed")
@@ -26,7 +140,9 @@ if "existing_titles" not in st.session_state:
 if "existing_dois" not in st.session_state:
     st.session_state.existing_dois = set()
 if "onedrive_path" not in st.session_state:
-    st.session_state.onedrive_path = ""
+    st.session_state.onedrive_path = load_onedrive_path()
+if "sync_status" not in st.session_state:
+    st.session_state.sync_status = None
 
 # --- PREMIUM MODERN CSS ---
 # Utilizing Inter font, glassmorphism, dark mode aesthetics, and micro-animations
@@ -91,7 +207,7 @@ if zot and not st.session_state.existing_titles:
     load_zotero_library()
 
 # Dynamic OneDrive Synchronizer
-def sync_to_onedrive(title, authors, year, abstract, doi, pdf_url):
+def sync_to_onedrive(title, authors, year, abstract, doi, pdf_url, log_history=True):
     path = st.session_state.get('onedrive_path', '')
     if not path:
         return False
@@ -171,13 +287,141 @@ def sync_to_onedrive(title, authors, year, abstract, doi, pdf_url):
         except Exception:
             pass
             
+    # Append to OneDrive Sync History Log if requested
+    if log_history:
+        try:
+            update_sync_history_log(path, [{
+                'title': title,
+                'authors': authors if authors else 'Unknown',
+                'year': clean_year if clean_year else 'Unknown',
+                'date_added': datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+            }])
+        except Exception:
+            pass
+            
     return True
+
+def sync_all_zotero_to_onedrive():
+    path = st.session_state.get('onedrive_path', '')
+    if not path or not os.path.exists(path):
+        return 0, 0, []
+        
+    if not zot:
+        return 0, 0, []
+        
+    try:
+        collections = zot.collections()
+        golden_key = None
+        for c in collections:
+            if "Golden Papers" in c['data']['name']:
+                golden_key = c['data']['key']
+                break
+                
+        if not golden_key:
+            return 0, 0, []
+            
+        items = zot.collection_items(golden_key)
+        items.sort(key=lambda x: x.get('data', {}).get('dateAdded', ''))
+        
+        synced_new_papers = []
+        synced_count = 0
+        total_items = 0
+        
+        for item in items:
+            data = item.get('data', {})
+            if data.get('itemType') in ['attachment', 'note']:
+                continue
+                
+            total_items += 1
+            title = data.get('title', 'Untitled')
+            abstract = data.get('abstractNote', '')
+            url = data.get('url', '')
+            year = data.get('date', 'Unknown')
+            date_added = data.get('dateAdded', '')
+            
+            # Get authors
+            creators = data.get('creators', [])
+            authors_list = []
+            for creator in creators:
+                name = creator.get('lastName') or creator.get('firstName') or creator.get('name')
+                if name:
+                    authors_list.append(name)
+            authors = ", ".join(authors_list) if authors_list else ""
+            
+            # Form clean filename base
+            def clean_filename_part(text):
+                if not text:
+                    return ""
+                text = re.sub(r'[\\/*?:"<>|]', '', text)
+                return text.encode('ascii', 'ignore').decode('ascii').strip()
+                
+            clean_title = clean_filename_part(title)[:60]
+            safe_author = clean_filename_part(authors.split(',')[0]) if authors else ""
+            
+            year_match = re.search(r'\b\d{4}\b', str(year))
+            clean_year = year_match.group(0) if year_match else ""
+            
+            if safe_author and clean_year:
+                filename_base = f"{safe_author}_{clean_year}_{clean_title}"
+            elif safe_author:
+                filename_base = f"{safe_author}_{clean_title}"
+            elif clean_year:
+                filename_base = f"{clean_year}_{clean_title}"
+            else:
+                filename_base = clean_title
+                
+            filename_base = re.sub(r'\s+', ' ', filename_base).strip().strip('.')
+            if not filename_base:
+                filename_base = "Academic_Paper"
+                
+            md_path = os.path.join(path, "SummaryCards", f"{filename_base}.md")
+            
+            # If the summary card doesn't exist, we sync it!
+            if not os.path.exists(md_path):
+                # Search OpenAlex for PDF URL
+                pdf_url = ""
+                try:
+                    query_url = f"https://api.openalex.org/works?search={requests.utils.quote(title)}&per-page=1"
+                    response = requests.get(query_url, timeout=10).json()
+                    results = response.get('results', [])
+                    if Math := results:
+                        best_oa = results[0].get('best_oa_location') or {}
+                        pdf_url = best_oa.get('pdf_url') or ''
+                        if not pdf_url:
+                            content_urls = results[0].get('content_urls') or {}
+                            pdf_url = content_urls.get('pdf') or ''
+                except Exception:
+                    pass
+                    
+                success = sync_to_onedrive(title, authors, clean_year, abstract, url, pdf_url, log_history=False)
+                if success:
+                    synced_count += 1
+                    synced_new_papers.append({
+                        'title': title,
+                        'authors': authors if authors else 'Unknown',
+                        'year': clean_year if clean_year else 'Unknown',
+                        'date_added': date_added
+                    })
+                    
+        # Update Sync History Log file inside the OneDrive folder
+        if synced_new_papers:
+            update_sync_history_log(path, synced_new_papers)
+            
+        return synced_count, total_items, synced_new_papers
+    except Exception as e:
+        st.error(f"Error during OneDrive synchronization: {e}")
+        return 0, 0, []
 
 # Tabs
 tab1, tab2, tab3, tab4 = st.tabs(["📚 Zotero Library", "🏛️ Gov Databases", "📊 Analytics", "🤖 AI Paper Search"])
 
 # --- TAB 1: ZOTERO ---
 with tab1:
+    # Display sync status toast/success if set
+    if st.session_state.sync_status:
+        st.success(st.session_state.sync_status)
+        st.session_state.sync_status = None
+        
     col1, col2, col3, col4 = st.columns([0.4, 0.2, 0.2, 0.2])
     with col1:
         st.markdown("<h3>Live Zotero Synchronization</h3>", unsafe_allow_html=True)
@@ -187,24 +431,42 @@ with tab1:
         st.link_button("📚 Open Zotero Library", "https://www.zotero.org/mylibrary", use_container_width=True)
     with col4:
         if st.button("🔄 Refresh", use_container_width=True):
-            load_zotero_library()
+            with st.spinner("Refreshing Zotero Library..."):
+                load_zotero_library()
+            if is_local_env() and st.session_state.onedrive_path:
+                with st.spinner("Checking Zotero and syncing new papers to local OneDrive..."):
+                    synced_count, total_items, new_papers = sync_all_zotero_to_onedrive()
+                    if synced_count > 0:
+                        st.session_state.sync_status = f"✅ Synced {synced_count} new papers to your local OneDrive!"
+                    else:
+                        st.session_state.sync_status = "✅ Local OneDrive is fully up-to-date!"
             st.rerun()
             
     if zot:
         try:
-            items = zot.items(limit=10)
+            # Get up to 50 items and filter to actual papers
+            all_items = zot.items(limit=50)
+            papers = [item for item in all_items if item.get('data', {}).get('itemType') not in ['attachment', 'note']]
+            
+            # Sort by dateAdded descending (newest on top)
+            papers.sort(key=lambda x: x.get('data', {}).get('dateAdded', ''), reverse=True)
+            
             st.success(f"✅ Securely connected to Zotero! User ID: {ZOTERO_USER_ID}")
             
-            if items:
+            if papers:
                 st.markdown("<div class='glass-card'><h4>Recently Added Papers</h4>", unsafe_allow_html=True)
-                for item in items[:5]:
-                    title = item['data'].get('title', 'Untitled')
-                    item_type = item['data'].get('itemType', 'unknown')
+                for item in papers[:10]:  # Show up to 10 recently added papers
+                    data = item.get('data', {})
+                    title = data.get('title', 'Untitled')
+                    item_type = data.get('itemType', 'unknown')
                     item_key = item['key']
                     zotero_url = item.get('links', {}).get('alternate', {}).get('href', '#')
+                    date_added = data.get('dateAdded', '')
+                    
+                    is_new, formatted_date = check_if_new_and_format(date_added)
                     
                     # Get collection info if available
-                    collections = item['data'].get('collections', [])
+                    collections = data.get('collections', [])
                     col_tag = "📁 Unfiled"
                     if collections:
                         try:
@@ -214,7 +476,12 @@ with tab1:
                         except:
                             pass
                     
-                    st.markdown(f"**{title}** <br/><span style='color:#94a3b8; font-size:0.9em;'>Type: {item_type} | {col_tag}</span>", unsafe_allow_html=True)
+                    # Highlight if added in the last 7 days
+                    badge_html = ""
+                    if is_new:
+                        badge_html = f"<span style='background-color:#0ea5e9; color:white; padding:3px 8px; border-radius:12px; font-size:0.75rem; font-weight:bold; margin-right:8px;'>🆕 New (Added: {formatted_date})</span>"
+                        
+                    st.markdown(f"**{badge_html}{title}** <br/><span style='color:#94a3b8; font-size:0.9em;'>Type: {item_type} | {col_tag}</span>", unsafe_allow_html=True)
                     st.markdown(f"[🔗 Open in Zotero Web]({zotero_url})")
                     st.markdown("<hr style='border-color: rgba(255,255,255,0.1); margin: 10px 0;'>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -225,21 +492,34 @@ with tab1:
     else:
         st.error("Zotero disconnected.")
         
-    st.markdown("<div class='glass-card'><h4>📁 Academic OneDrive Integration (Penn State)</h4>", unsafe_allow_html=True)
-    st.markdown("<p style='color: #94a3b8; font-size: 0.95rem;'>Configure your shared OneDrive directory to automatically save PDF papers and citation summary cards for your advisor, Dr. Rebecca Napolitano.</p>", unsafe_allow_html=True)
-    onedrive_input = st.text_input(
-        "Shared OneDrive Folder Path:",
-        value=st.session_state.onedrive_path,
-        placeholder="E.g., C:\\Users\\Márcio\\OneDrive - The Pennsylvania State University\\Rebecca_Shared"
-    )
-    if onedrive_input:
-        import os
-        if os.path.exists(onedrive_input):
-            st.session_state.onedrive_path = onedrive_input
-            st.success("✅ Shared OneDrive connection is Active! Saved papers will automatically sync to Rebecca.")
-        else:
-            st.warning("⚠️ Local directory path not found. Please verify the exact folder path.")
-    st.markdown("</div>", unsafe_allow_html=True)
+    if is_local_env():
+        st.markdown("<div class='glass-card'><h4>📁 Academic OneDrive Integration (Penn State)</h4>", unsafe_allow_html=True)
+        st.markdown("<p style='color: #94a3b8; font-size: 0.95rem;'>Configure your shared OneDrive directory to automatically save PDF papers and citation summary cards for your advisor, Dr. Rebecca Napolitano.</p>", unsafe_allow_html=True)
+        onedrive_input = st.text_input(
+            "Shared OneDrive Folder Path:",
+            value=st.session_state.onedrive_path,
+            placeholder="E.g., C:\\Users\\Márcio\\OneDrive - The Pennsylvania State University\\Rebecca_Shared"
+        )
+        if onedrive_input:
+            import os
+            if os.path.exists(onedrive_input):
+                st.session_state.onedrive_path = onedrive_input
+                save_onedrive_path(onedrive_input)
+                st.success("✅ Shared OneDrive connection is Active! Saved papers will automatically sync to Rebecca.")
+            else:
+                st.warning("⚠️ Local directory path not found. Please verify the exact folder path.")
+        st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class='glass-card' style='border-left: 4px solid #0ea5e9;'>
+            <h4 style='color: #38bdf8; margin-top:0; font-size:1.1rem;'>☁️ Cloud Synchronization Active</h4>
+            <p style='color: #94a3b8; font-size: 0.92rem; line-height: 1.5; margin-bottom: 0;'>
+                OneDrive integration is running in Cloud-to-Zotero relay mode. Saving a paper here will store it in Zotero Cloud. 
+                When Márcio runs his local dashboard and clicks <b>Refresh</b>, the files will be downloaded to your shared OneDrive folder automatically. 
+                No local path configuration is required on your computer.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
 # --- TAB 2: GOVERNMENT HUB ---
 with tab2:
