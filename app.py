@@ -1215,9 +1215,6 @@ with tab1:
                         
                     st.markdown(f"**{badge_html}{title}** <br/><span style='color:#94a3b8; font-size:1.05em;'>Type: {item_type} | {col_tag}</span>", unsafe_allow_html=True)
                     
-                    # Citações e Chat em colunas
-                    col_zot_btn, col_chat_btn, col_cite_btn = st.columns([0.4, 0.3, 0.3])
-                    
                     # Extração de dados da citação e chat
                     creators_list = []
                     for c_auth in data.get('creators', []):
@@ -1229,15 +1226,25 @@ with tab1:
                     clean_yr = match_yr.group(0) if match_yr else "Unknown"
                     paper_url = data.get('url', '') or zotero_url
                     
-                    with col_zot_btn:
-                        st.markdown(f"[🔗 Open in Zotero Web]({zotero_url})")
-                    with col_chat_btn:
-                        if st.button("💬 Chat with Paper", key=f"chat_trigger_{item_key}_{idx}", use_container_width=True):
-                            st.session_state.chat_messages = []
-                            chat_with_paper_modal({'title': title, 'key': item_key, 'url': paper_url, 'authors': authors_str, 'year': clean_yr})
-                    with col_cite_btn:
-                        if st.button("📋 Cite Paper", key=f"cite_trigger_{item_key}_{idx}", use_container_width=True):
-                            cite_paper_modal({'title': title, 'authors': authors_str, 'year': clean_yr, 'url': paper_url})
+                    # Citações e Chat em colunas (Remove chat button for presentations/videos)
+                    if item_type == 'presentation':
+                        col_zot_btn, col_cite_btn = st.columns([0.5, 0.5])
+                        with col_zot_btn:
+                            st.markdown(f"[🔗 Open in Zotero Web]({zotero_url})")
+                        with col_cite_btn:
+                            if st.button("📋 Cite Video", key=f"cite_trigger_{item_key}_{idx}", use_container_width=True):
+                                cite_paper_modal({'title': title, 'authors': authors_str, 'year': clean_yr, 'url': paper_url})
+                    else:
+                        col_zot_btn, col_chat_btn, col_cite_btn = st.columns([0.4, 0.3, 0.3])
+                        with col_zot_btn:
+                            st.markdown(f"[🔗 Open in Zotero Web]({zotero_url})")
+                        with col_chat_btn:
+                            if st.button("💬 Chat with Paper", key=f"chat_trigger_{item_key}_{idx}", use_container_width=True):
+                                st.session_state.chat_messages = []
+                                chat_with_paper_modal({'title': title, 'key': item_key, 'url': paper_url, 'authors': authors_str, 'year': clean_yr})
+                        with col_cite_btn:
+                            if st.button("📋 Cite Paper", key=f"cite_trigger_{item_key}_{idx}", use_container_width=True):
+                                cite_paper_modal({'title': title, 'authors': authors_str, 'year': clean_yr, 'url': paper_url})
                             
                     st.markdown("<hr style='border-color: rgba(255,255,255,0.1); margin: 10px 0;'>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
