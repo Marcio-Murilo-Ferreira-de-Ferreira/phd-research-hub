@@ -476,34 +476,34 @@ def chat_with_paper_modal(paper_info):
     if pdf_text.startswith("ERROR:"):
         st.markdown(f"""
         <div style='background: rgba(239, 68, 68, 0.08); border-left: 4px solid #ef4444; padding: 16px; border-radius: 8px; margin-bottom: 20px; font-size: 0.95rem; color: #fecaca; line-height: 1.5;'>
-            ❌ <b>PDF do artigo não localizado!</b><br/>
-            Não encontramos o arquivo PDF deste artigo na pasta local do seu OneDrive nem anexado ao item no Zotero Cloud. Também não há uma versão de acesso aberto (Open Access) disponível na internet.
+            ❌ <b>Paper PDF not found!</b><br/>
+            We could not locate the PDF file for this paper in your local OneDrive folder or as an attachment in Zotero Cloud. No Open Access version was found online either.
             <br/><br/>
-            <b>Como adicionar o PDF para liberar o chat com o texto completo?</b>
+            <b>How to add the PDF for full-text chat?</b>
             <ul style="margin-left: 20px; margin-top: 5px;">
-                <li><b>Pelo Zotero Desktop:</b> Baixe o PDF no seu computador, abra o Zotero Desktop, arraste e solte o arquivo PDF por cima do artigo correspondente e clique no botão de Sincronizar (canto superior direito).</li>
-                <li><b>Pelo OneDrive local:</b> Salve o PDF na pasta <code>PDFs</code> do seu OneDrive de pesquisa com o nome contendo o título do artigo.</li>
+                <li><b>Via Zotero Desktop:</b> Download the paper's PDF to your computer, open Zotero Desktop, drag & drop the PDF file onto the corresponding paper item, and click the Sync button (top-right corner).</li>
+                <li><b>Via local OneDrive:</b> Save the PDF file in the <code>PDFs</code> folder of your research OneDrive with a filename containing the paper's title.</li>
             </ul>
         </div>
         """, unsafe_allow_html=True)
         
         abstract = paper_info.get('abstract', '')
         if abstract:
-            st.info("💡 **Alternativa:** Você pode iniciar a conversa usando apenas o **Resumo (Abstract)** deste artigo cadastrado no Zotero.")
-            if st.button("💬 Conversar usando apenas o Resumo", use_container_width=True):
+            st.info("💡 **Alternative:** You can start the conversation using only the **Abstract** registered in Zotero.")
+            if st.button("💬 Chat using Abstract Only", use_container_width=True):
                 st.session_state.pdf_cache_text = f"ABSTRACT ONLY:\n{abstract}"
                 st.rerun()
         else:
-            st.warning("⚠️ Este artigo também não possui um Resumo (Abstract) cadastrado no Zotero.")
+            st.warning("⚠️ This paper does not have an Abstract registered in Zotero either.")
             
-        if st.button("Fechar", use_container_width=True):
+        if st.button("Close", use_container_width=True):
             st.rerun()
         return
         
     if pdf_text.startswith("ABSTRACT ONLY:"):
-        st.info("💡 Usando o **Resumo (Abstract)** do artigo como contexto para a IA (Texto completo do PDF indisponível).")
+        st.info("💡 Using the paper's **Abstract** as context for the AI (Full-text PDF is unavailable).")
     else:
-        st.success(f"✅ PDF do artigo carregado com sucesso ({len(pdf_text)} caracteres)!")
+        st.success(f"✅ Paper PDF loaded successfully ({len(pdf_text)} characters)!")
     
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
@@ -1262,9 +1262,9 @@ with tab1:
                     
                     if is_local_env() and path:
                         if has_local_pdf:
-                            badge_html += f"<span style='background-color:#10b981; color:white; padding:3px 8px; border-radius:12px; font-size:0.82rem; font-weight:bold; margin-right:8px;'>📁 PDF Local (Pronto)</span>"
+                            badge_html += f"<span style='background-color:#10b981; color:white; padding:3px 8px; border-radius:12px; font-size:0.82rem; font-weight:bold; margin-right:8px;'>📁 Local PDF (Ready)</span>"
                         else:
-                            badge_html += f"<span style='background-color:#f59e0b; color:white; padding:3px 8px; border-radius:12px; font-size:0.82rem; font-weight:bold; margin-right:8px;'>⚠️ Sem PDF (Apenas Resumo)</span>"
+                            badge_html += f"<span style='background-color:#f59e0b; color:white; padding:3px 8px; border-radius:12px; font-size:0.82rem; font-weight:bold; margin-right:8px;'>⚠️ No PDF (Abstract Only)</span>"
                             
                     st.markdown(f"**{badge_html}{title}** <br/><span style='color:#94a3b8; font-size:1.05em;'>Type: {item_type} | {col_tag}</span>", unsafe_allow_html=True)
                     
