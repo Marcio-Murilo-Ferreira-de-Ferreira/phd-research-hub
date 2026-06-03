@@ -474,12 +474,36 @@ def chat_with_paper_modal(paper_info):
                 
     pdf_text = st.session_state.get("pdf_cache_text", "")
     if pdf_text.startswith("ERROR:"):
-        st.error(pdf_text)
-        if st.button("Close"):
+        st.markdown(f"""
+        <div style='background: rgba(239, 68, 68, 0.08); border-left: 4px solid #ef4444; padding: 16px; border-radius: 8px; margin-bottom: 20px; font-size: 0.95rem; color: #fecaca; line-height: 1.5;'>
+            ❌ <b>PDF do artigo não localizado!</b><br/>
+            Não encontramos o arquivo PDF deste artigo na pasta local do seu OneDrive nem anexado ao item no Zotero Cloud. Também não há uma versão de acesso aberto (Open Access) disponível na internet.
+            <br/><br/>
+            <b>Como adicionar o PDF para liberar o chat com o texto completo?</b>
+            <ul style="margin-left: 20px; margin-top: 5px;">
+                <li><b>Pelo Zotero Desktop:</b> Baixe o PDF no seu computador, abra o Zotero Desktop, arraste e solte o arquivo PDF por cima do artigo correspondente e clique no botão de Sincronizar (canto superior direito).</li>
+                <li><b>Pelo OneDrive local:</b> Salve o PDF na pasta <code>PDFs</code> do seu OneDrive de pesquisa com o nome contendo o título do artigo.</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        abstract = paper_info.get('abstract', '')
+        if abstract:
+            st.info("💡 **Alternativa:** Você pode iniciar a conversa usando apenas o **Resumo (Abstract)** deste artigo cadastrado no Zotero.")
+            if st.button("💬 Conversar usando apenas o Resumo", use_container_width=True):
+                st.session_state.pdf_cache_text = f"ABSTRACT ONLY:\n{abstract}"
+                st.rerun()
+        else:
+            st.warning("⚠️ Este artigo também não possui um Resumo (Abstract) cadastrado no Zotero.")
+            
+        if st.button("Fechar", use_container_width=True):
             st.rerun()
         return
         
-    st.success(f"✅ PDF text loaded successfully ({len(pdf_text)} characters)!")
+    if pdf_text.startswith("ABSTRACT ONLY:"):
+        st.info("💡 Usando o **Resumo (Abstract)** do artigo como contexto para a IA (Texto completo do PDF indisponível).")
+    else:
+        st.success(f"✅ PDF do artigo carregado com sucesso ({len(pdf_text)} caracteres)!")
     
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
@@ -1189,6 +1213,17 @@ with tab1:
                 elif sort_option == "Title (A-Z)":
                     papers.sort(key=lambda x: x.get('data', {}).get('title', '').strip().lower())
                 
+                # Get list of local PDFs in OneDrive to check availability
+                onedrive_pdfs = []
+                path = st.session_state.get('onedrive_path', '')
+                if path and os.path.exists(path):
+                    pdf_dir = os.path.join(path, "PDFs")
+                    if os.path.exists(pdf_dir):
+                        try:
+                            onedrive_pdfs = [re.sub(r'\s+', ' ', f.lower()) for f in os.listdir(pdf_dir) if f.lower().endswith(".pdf")]
+                        except:
+                            pass
+
                 st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
                 for idx, item in enumerate(papers[:10]):  # Show up to 10 recently added papers
                     data = item.get('data', {})
@@ -1211,11 +1246,26 @@ with tab1:
                         except:
                             pass
                     
-                    # Highlight if added in the last 7 days
+                    # Check local PDF availability
+                    has_local_pdf = False
+                    if onedrive_pdfs:
+                        clean_title = re.sub(r'[\\/*?:"<>|]', '', title)[:60].encode('ascii', 'ignore').decode('ascii').strip().lower()
+                        clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+                        for pdf_name in onedrive_pdfs:
+                            if clean_title in pdf_name:
+                                has_local_pdf = True
+                                break
+                    
                     badge_html = ""
                     if is_new:
-                        badge_html = f"<span style='background-color:#0ea5e9; color:white; padding:3px 8px; border-radius:12px; font-size:1.0rem; font-weight:bold; margin-right:8px;'>🆕 New (Added: {formatted_date})</span>"
-                        
+                        badge_html += f"<span style='background-color:#0ea5e9; color:white; padding:3px 8px; border-radius:12px; font-size:0.82rem; font-weight:bold; margin-right:8px;'>🆕 New (Added: {formatted_date})</span>"
+                    
+                    if is_local_env() and path:
+                        if has_local_pdf:
+                            badge_html += f"<span style='background-color:#10b981; color:white; padding:3px 8px; border-radius:12px; font-size:0.82rem; font-weight:bold; margin-right:8px;'>📁 PDF Local (Pronto)</span>"
+                        else:
+                            badge_html += f"<span style='background-color:#f59e0b; color:white; padding:3px 8px; border-radius:12px; font-size:0.82rem; font-weight:bold; margin-right:8px;'>⚠️ Sem PDF (Apenas Resumo)</span>"
+                            
                     st.markdown(f"**{badge_html}{title}** <br/><span style='color:#94a3b8; font-size:1.05em;'>Type: {item_type} | {col_tag}</span>", unsafe_allow_html=True)
                     
                     # Extração de dados da citação e chat
@@ -1244,7 +1294,14 @@ with tab1:
                         with col_chat_btn:
                             if st.button("💬 Chat with Paper", key=f"chat_trigger_{item_key}_{idx}", use_container_width=True):
                                 st.session_state.chat_messages = []
-                                chat_with_paper_modal({'title': title, 'key': item_key, 'url': paper_url, 'authors': authors_str, 'year': clean_yr})
+                                chat_with_paper_modal({
+                                    'title': title, 
+                                    'key': item_key, 
+                                    'url': paper_url, 
+                                    'authors': authors_str, 
+                                    'year': clean_yr,
+                                    'abstract': data.get('abstractNote', '')
+                                })
                         with col_cite_btn:
                             if st.button("📋 Cite Paper", key=f"cite_trigger_{item_key}_{idx}", use_container_width=True):
                                 cite_paper_modal({'title': title, 'authors': authors_str, 'year': clean_yr, 'url': paper_url})
