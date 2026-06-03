@@ -83,10 +83,13 @@ def get_paper_pdf_text(title, item_key, url, pdf_url=None):
         pdf_dir = os.path.join(path, "PDFs")
         if os.path.exists(pdf_dir):
             clean_title = re.sub(r'[\\/*?:"<>|]', '', title)[:60].encode('ascii', 'ignore').decode('ascii').strip().lower()
+            clean_title = re.sub(r'\s+', ' ', clean_title).strip()
             for filename in os.listdir(pdf_dir):
-                if filename.lower().endswith(".pdf") and clean_title in filename.lower():
-                    local_path = os.path.join(pdf_dir, filename)
-                    return extract_text_from_pdf_path(local_path)
+                if filename.lower().endswith(".pdf"):
+                    clean_filename = re.sub(r'\s+', ' ', filename.lower())
+                    if clean_title in clean_filename:
+                        local_path = os.path.join(pdf_dir, filename)
+                        return extract_text_from_pdf_path(local_path)
                     
     if zot:
         try:
@@ -1391,13 +1394,7 @@ with tab2:
     
     # AI Search Form
     with st.form("semantic_search_form"):
-        st.markdown("""
-        <div style='background: rgba(56, 189, 248, 0.08); border-left: 4px solid #38bdf8; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; font-size: 0.92rem; line-height: 1.4; color: #e2e8f0;'>
-            💡 <b>Antigravity's Golden Tip:</b> Writing your search prompt in <b>English</b> guarantees <b>100% more accurate</b> results! The US repositories index their academic catalogs exclusively in English. <br/>
-            <i>Use key-terms like: <b>URM</b> (Unreinforced Masonry) for unreinforced masonry, <b>Finite Element Method / Abaqus</b> for finite element models, and <b>Tornado Load / Wind Load</b> for structural wind loading.</i>
-        </div>
-        """, unsafe_allow_html=True)
-        
+
         golden_prompt = st.text_area(
             "🧠 Describe what you are looking for (in English for best results):",
             height=120,
