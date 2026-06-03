@@ -107,6 +107,24 @@ def get_paper_pdf_text(title, item_key, url, pdf_url=None):
         except Exception:
             pass
             
+    # OpenAlex Dynamic PDF lookup fallback
+    try:
+        query_url = f"https://api.openalex.org/works?search={requests.utils.quote(title)}&per-page=1"
+        response = requests.get(query_url, timeout=10).json()
+        results = response.get('results', [])
+        if results:
+            best_oa = results[0].get('best_oa_location') or {}
+            oa_pdf = best_oa.get('pdf_url') or ''
+            if not oa_pdf:
+                content_urls = results[0].get('content_urls') or {}
+                oa_pdf = content_urls.get('pdf') or ''
+            if oa_pdf:
+                r = requests.get(oa_pdf, timeout=15)
+                if r.status_code == 200 and r.content.startswith(b"%PDF"):
+                    return extract_text_from_pdf_bytes(r.content)
+    except Exception:
+        pass
+            
     return None
 
 def call_gemini(api_key, system_instruction, prompt):
