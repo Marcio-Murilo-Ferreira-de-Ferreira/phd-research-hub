@@ -77,6 +77,35 @@ def extract_text_from_pdf_bytes(pdf_bytes):
     except Exception as e:
         return f"Error extracting text from PDF: {e}"
 
+def resolve_pdf_url(url):
+    if not url:
+        return ""
+    if url.lower().endswith(".pdf") or ".pdf?" in url.lower() or "/pdf/" in url.lower():
+        return url
+    try:
+        r = requests.head(url, headers={'User-Agent': 'Mozilla/5.0'}, allow_redirects=True, timeout=5)
+        if 'application/pdf' in r.headers.get('Content-Type', '').lower():
+            return r.url
+            
+        r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, allow_redirects=True, timeout=10)
+        final_url = r.url
+        if 'text/html' in r.headers.get('Content-Type', '').lower():
+            from bs4 import BeautifulSoup
+            from urllib.parse import urljoin
+            soup = BeautifulSoup(r.text, 'html.parser')
+            pdf_links = []
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                if '.pdf' in href.lower() or 'bitstream' in href.lower() or 'download' in href.lower():
+                    full_href = urljoin(final_url, href)
+                    if full_href not in pdf_links:
+                        pdf_links.append(full_href)
+            if pdf_links:
+                return pdf_links[0]
+    except Exception:
+        pass
+    return url
+
 def get_paper_pdf_text(title, item_key, url, pdf_url=None):
     path = st.session_state.get('onedrive_path', '')
     if path and os.path.exists(path):
@@ -102,13 +131,15 @@ def get_paper_pdf_text(title, item_key, url, pdf_url=None):
             pass
             
     target_url = pdf_url or url
-    if target_url and target_url.lower().endswith(".pdf"):
-        try:
-            r = requests.get(target_url, timeout=15)
-            if r.status_code == 200 and r.content.startswith(b"%PDF"):
-                return extract_text_from_pdf_bytes(r.content)
-        except Exception:
-            pass
+    if target_url:
+        resolved_url = resolve_pdf_url(target_url)
+        if resolved_url:
+            try:
+                r = requests.get(resolved_url, timeout=15)
+                if r.status_code == 200 and r.content.startswith(b"%PDF"):
+                    return extract_text_from_pdf_bytes(r.content)
+            except Exception:
+                pass
             
     # OpenAlex Dynamic PDF lookup fallback
     try:
@@ -122,9 +153,11 @@ def get_paper_pdf_text(title, item_key, url, pdf_url=None):
                 content_urls = results[0].get('content_urls') or {}
                 oa_pdf = content_urls.get('pdf') or ''
             if oa_pdf:
-                r = requests.get(oa_pdf, timeout=15)
-                if r.status_code == 200 and r.content.startswith(b"%PDF"):
-                    return extract_text_from_pdf_bytes(r.content)
+                resolved_oa = resolve_pdf_url(oa_pdf)
+                if resolved_oa:
+                    r = requests.get(resolved_oa, timeout=15)
+                    if r.status_code == 200 and r.content.startswith(b"%PDF"):
+                        return extract_text_from_pdf_bytes(r.content)
     except Exception:
         pass
             
@@ -863,8 +896,9 @@ def sync_to_onedrive(title, authors, year, abstract, doi, pdf_url, log_history=T
     # 2. Try to download and save Open Access PDF if available (with validation)
     if pdf_url:
         try:
+            resolved_pdf = resolve_pdf_url(pdf_url)
             pdf_path = os.path.join(pdf_dir, f"{filename_base}.pdf")
-            response = requests.get(pdf_url, timeout=15)
+            response = requests.get(resolved_pdf, timeout=15)
             if response.status_code == 200:
                 # Validate that it is a real PDF (starts with %PDF)
                 content = response.content
@@ -1713,7 +1747,12 @@ with tab2:
                         
                     # Render Direct PDF Download Link if available
                     if pdf_url:
-                        st.markdown(f"[📥 Download Full PDF (Open Access)]({pdf_url})")
+                        is_direct_pdf = pdf_url.lower().endswith(".pdf") or ".pdf?" in pdf_url.lower() or "/pdf/" in pdf_url.lower()
+                        if is_direct_pdf:
+                            st.markdown(f"[📥 Download Full PDF (Open Access)]({pdf_url})")
+                        else:
+                            st.markdown(f"[🏛️ Open Institutional Repository Page (Open Access)]({pdf_url})")
+                            st.caption("💡 *This link opens the university repository where the paper is archived. You can click 'Save as Golden Paper' above to let the dashboard download and sync the PDF automatically!*")
                     else:
                         st.markdown("<span style='color: #94a3b8; font-size: 0.85rem; font-style: italic;'>🔒 Full-Text behind publisher paywall</span>", unsafe_allow_html=True)
                 with col_zotero:
