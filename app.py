@@ -106,6 +106,208 @@ def resolve_pdf_url(url):
         pass
     return url
 
+def download_all_missing_pdfs():
+    if not zot:
+        st.error("Zotero is not connected.")
+        return
+        
+    import time
+    
+    path = st.session_state.get('onedrive_path', '')
+    if path and os.path.exists(path):
+        pdf_dir = os.path.join(path, "PDFs")
+        os.makedirs(pdf_dir, exist_ok=True)
+        is_local = True
+    else:
+        pdf_dir = "temp_pdfs"
+        os.makedirs(pdf_dir, exist_ok=True)
+        is_local = False
+        
+    # 1. Fetch all items in Zotero
+    with st.spinner("Fetching Zotero library items..."):
+        try:
+            all_items = zot.everything(zot.items())
+            papers = [item for item in all_items if item.get('data', {}).get('itemType') not in ['attachment', 'note', 'presentation']]
+        except Exception as e:
+            st.error(f"Failed to fetch Zotero items: {e}")
+            return
+        
+    if not papers:
+        st.info("No papers found in your Zotero library.")
+        return
+        
+    # 2. Get existing local PDFs if running locally
+    local_pdfs = []
+    if is_local:
+        try:
+            local_pdfs = [re.sub(r'\s+', ' ', f.lower()) for f in os.listdir(pdf_dir) if f.lower().endswith(".pdf")]
+        except:
+            pass
+            
+    # Also check Zotero Cloud attachments
+    cloud_attachments_parents = set()
+    for item in all_items:
+        data = item.get('data', {})
+        if data.get('itemType') == 'attachment' and data.get('contentType') == 'application/pdf':
+            parent = data.get('parentItem')
+            if parent:
+                cloud_attachments_parents.add(parent)
+                
+    st.info(f"Scanning {len(papers)} papers in your library to identify missing PDFs...")
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    success_count = 0
+    already_had_count = 0
+    fail_count = 0
+    
+    log_container = st.container()
+    
+    for idx, paper in enumerate(papers):
+        title = paper.get('data', {}).get('title', 'Untitled')
+        item_key = paper['key']
+        doi = paper.get('data', {}).get('url', '')
+        
+        # Check Zotero creators/authors
+        creators = paper.get('data', {}).get('creators', [])
+        authors_list = []
+        for c in creators:
+            n = c.get('lastName') or c.get('firstName') or c.get('name')
+            if n: authors_list.append(n)
+        authors = ", ".join(authors_list) if authors_list else "Unknown"
+        
+        year_str = paper.get('data', {}).get('date', 'Unknown')
+        match_yr = re.search(r'\b\d{4}\b', str(year_str))
+        year = match_yr.group(0) if match_yr else "Unknown"
+        
+        # Check local PDF availability
+        has_local_pdf = False
+        if is_local:
+            clean_title = re.sub(r'[\\/*?:"<>|]', '', title)[:60].encode('ascii', 'ignore').decode('ascii').strip().lower()
+            clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+            for pdf_name in local_pdfs:
+                if clean_title in pdf_name:
+                    has_local_pdf = True
+                    break
+        
+        # Check cloud PDF availability
+        has_cloud_pdf = item_key in cloud_attachments_parents
+        
+        if is_local and has_local_pdf and has_cloud_pdf:
+            already_had_count += 1
+            progress_bar.progress((idx + 1) / len(papers))
+            continue
+        elif not is_local and has_cloud_pdf:
+            already_had_count += 1
+            progress_bar.progress((idx + 1) / len(papers))
+            continue
+            
+        # A. If we have local PDF but not cloud PDF: upload to cloud
+        if is_local and has_local_pdf and not has_cloud_pdf:
+            clean_title = re.sub(r'[\\/*?:"<>|]', '', title)[:60].encode('ascii', 'ignore').decode('ascii').strip().lower()
+            clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+            local_path = None
+            for filename in os.listdir(pdf_dir):
+                if filename.lower().endswith(".pdf"):
+                    clean_filename = re.sub(r'\s+', ' ', filename.lower())
+                    if clean_title in clean_filename:
+                        local_path = os.path.join(pdf_dir, filename)
+                        break
+            if local_path:
+                status_text.text(f"📤 Uploading local PDF to Zotero Cloud: {title[:40]}...")
+                try:
+                    zot.attachment_simple([local_path], parentid=item_key)
+                    success_count += 1
+                    with log_container:
+                        st.write(f"📤 **Uploaded to Zotero Cloud:** {title}")
+                except Exception:
+                    fail_count += 1
+            else:
+                fail_count += 1
+            progress_bar.progress((idx + 1) / len(papers))
+            continue
+            
+        # B. If we need to download it from the web (neither local nor cloud exists)
+        status_text.text(f"🔍 Searching PDF for: {title[:40]}...")
+        pdf_url = ""
+        try:
+            query_url = f"https://api.openalex.org/works?search={requests.utils.quote(title)}&per-page=1"
+            response = requests.get(query_url, timeout=10).json()
+            results = response.get('results', [])
+            if results:
+                best_oa = results[0].get('best_oa_location') or {}
+                pdf_url = best_oa.get('pdf_url') or ''
+                if not pdf_url:
+                    content_urls = results[0].get('content_urls') or {}
+                    pdf_url = content_urls.get('pdf') or ''
+        except Exception:
+            pass
+            
+        if pdf_url:
+            status_text.text(f"📥 Downloading PDF for: {title[:40]}...")
+            try:
+                resolved_pdf = resolve_pdf_url(pdf_url)
+                
+                # Setup filename
+                def clean_filename_part(text):
+                    if not text: return ""
+                    text = re.sub(r'[\\/*?:"<>|]', '', text)
+                    return text.encode('ascii', 'ignore').decode('ascii').strip()
+                
+                clean_title_part = clean_filename_part(title)[:60]
+                safe_author = clean_filename_part(authors.split(',')[0]) if authors else ""
+                
+                if safe_author and year != "Unknown":
+                    filename_base = f"{safe_author}_{year}_{clean_title_part}"
+                elif safe_author:
+                    filename_base = f"{safe_author}_{clean_title_part}"
+                elif year != "Unknown":
+                    filename_base = f"{year}_{clean_title_part}"
+                else:
+                    filename_base = clean_title_part
+                filename_base = re.sub(r'\s+', ' ', filename_base).strip().strip('.')
+                if not filename_base:
+                    filename_base = "Academic_Paper"
+                    
+                local_pdf_path = os.path.join(pdf_dir, f"{filename_base}.pdf")
+                
+                r_pdf = requests.get(resolved_pdf, timeout=20)
+                if r_pdf.status_code == 200 and r_pdf.content.startswith(b"%PDF"):
+                    with open(local_pdf_path, 'wb') as f_pdf:
+                        f_pdf.write(r_pdf.content)
+                        
+                    try:
+                        zot.attachment_simple([local_pdf_path], parentid=item_key)
+                    except Exception:
+                        pass
+                        
+                    if not is_local:
+                        try: os.remove(local_pdf_path)
+                        except: pass
+                        
+                    success_count += 1
+                    with log_container:
+                        st.write(f"✅ **Recovered & Synced:** {title}")
+                else:
+                    fail_count += 1
+            except Exception:
+                fail_count += 1
+        else:
+            fail_count += 1
+            
+        progress_bar.progress((idx + 1) / len(papers))
+        time.sleep(0.5)
+        
+    status_text.empty()
+    st.success(f"🎉 **Zotero PDF Sync Completed!**\n* **Ready (already had PDF):** {already_had_count}\n* **Successfully recovered/uploaded:** {success_count}\n* **Could not find Open Access PDF:** {fail_count}")
+    
+    if not is_local:
+        try:
+            import shutil
+            shutil.rmtree("temp_pdfs")
+        except:
+            pass
+
 def get_paper_pdf_text(title, item_key, url, pdf_url=None):
     path = st.session_state.get('onedrive_path', '')
     if path and os.path.exists(path):
@@ -1221,6 +1423,18 @@ with tab1:
             papers = [item for item in all_items if item.get('data', {}).get('itemType') not in ['attachment', 'note']]
             
             st.success(f"✅ Securely connected to Zotero! User ID: {ZOTERO_USER_ID}")
+            
+            # Zotero PDF Toolkit Expander
+            with st.expander("🛠️ Zotero PDF Toolkit (Auto-download missing PDFs)"):
+                st.markdown("""
+                This tool automatically scans your entire Zotero Library, identifies papers that are missing PDF files, and attempts to recover them.
+                For every missing paper, it queries the Global Academic Index (OpenAlex) for Open Access PDFs. When a PDF is found, the system will:
+                1. Save the PDF directly to your local **OneDrive PDFs folder** (if running locally).
+                2. Upload the PDF directly to your **Zotero Cloud library** as a child attachment, making it immediately visible in your Zotero Desktop!
+                3. If you have the PDF locally in OneDrive but not in Zotero Cloud, it will automatically upload the local file to Zotero Cloud.
+                """)
+                if st.button("📥 Start Auto-Downloading Missing PDFs", use_container_width=True):
+                    download_all_missing_pdfs()
             
             if papers:
                 col_title_header, col_sort_dropdown = st.columns([0.5, 0.5])
